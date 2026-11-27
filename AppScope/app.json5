@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "com.hanime1.harmony",
     "vendor": "yenaly",
-    "versionCode": 1000281,
-    "versionName": "1.28.1",
+    "versionCode": 1000291,
+    "versionName": "1.29.1",
     "icon": "$media:app_icon",
     "label": "$string:app_name"
   }

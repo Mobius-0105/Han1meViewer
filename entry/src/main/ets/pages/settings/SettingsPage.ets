@@ -14,7 +14,6 @@
  * 逻辑约定（与本页重做前完全一致）：
  *  - 每个开关/选择立即持久化（AppSettings 内部 putSync + flush）；
  *  - 主题用 @StorageLink('themeMode') 驱动，主题色用 @StorageLink('themeColor') 驱动；
- *  - 播放内核用 @StorageLink('playerKernel') 驱动，切换写 AppSettings，视频页下次进入时读取；
  *  - 站点域名 / UA / 备用 CDN 修改后必须调用 NetworkConfigurator.apply()
  *    （内部 HanimeApi.configure），并提示“重新加载”才会用新配置请求；
  *  - 破坏性操作（清空历史 / 清空搜索历史 / 清空缓存）用 AlertDialog.show 二次确认。
@@ -71,9 +70,6 @@ const SETTINGS_INPUT_RADIUS: number = 14;
 /** 主题强调色预设（PuraPily 设置页观感：蓝 / 粉 / 绿 / 紫 / 橙） */
 const THEME_COLOR_OPTIONS: string[] = ['#007DFF', '#FB7299', '#00B578', '#8A2BFF', '#FF8F1F'];
 
-/** 播放内核分段选项（下标 0 = ExoPlayer，1 = MPV；与 AppSettings 的 'exo' / 'mpv' 对应） */
-const PLAYER_KERNEL_OPTIONS: string[] = ['ExoPlayer', 'MPV'];
-
 /** 屏幕方向锁分段选项（下标 0 = 跟随系统，1 = 锁定竖屏，2 = 锁定横屏） */
 const SCREEN_ORIENTATION_LABELS: string[] = ['跟随系统', '锁定竖屏', '锁定横屏'];
 
@@ -86,11 +82,6 @@ function screenOrientationSelection(lock: string): number {
     return 2;
   }
   return 0;
-}
-
-/** AppSettings 播放内核值 → SegmentRow 下标（非法值按默认 ExoPlayer 显示） */
-function playerKernelSelection(kernel: string): number {
-  return kernel === 'mpv' ? 1 : 0;
 }
 
 @Component
@@ -107,8 +98,6 @@ export struct SettingsPage {
   @StorageLink('useImmersiveMaterial') useImmersiveMaterial: boolean = true;
   /** 播放器底部常显细进度条（即时生效：InlinePlayer / VideoPage 都用 @StorageProp 读同一键） */
   @StorageLink('playerBottomProgress') playerBottomProgress: boolean = true;
-  /** 播放内核 'exo'（ExoPlayer 位，底层系统 AVPlayer，默认）/ 'mpv'（libmpv）；切换后重新进入视频页生效 */
-  @StorageLink('playerKernel') playerKernel: string = 'exo';
   /** 屏幕方向锁 'system'（跟随系统，默认）/ 'portrait'（锁竖屏）/ 'landscape'（锁横屏）；切换立即应用 */
   @StorageLink('screenOrientationLock') screenOrientationLock: string = 'system';
   /** 全屏窗口下底部导航条高度（EntryAbility 写入），用于内容底部留白 */
@@ -303,16 +292,6 @@ export struct SettingsPage {
   private onBottomProgressToggle(value: boolean): void {
     AppSettings.getInstance().setPlayerBottomProgress(value);
     Toast.show(value ? '已开启底部常显进度条' : '已关闭底部常显进度条');
-  }
-
-  /** 播放内核切换：写 AppSettings（AppStorage 镜像），视频页下次进入时读取生效 */
-  private onPlayerKernelSelect(index: number): void {
-    const next: string = index === 1 ? 'mpv' : 'exo';
-    if (next === this.playerKernel) {
-      return;
-    }
-    AppSettings.getInstance().setPlayerKernel(next);
-    Toast.show('已切换播放内核，重新进入视频页生效');
   }
 
   private onWatchHistoryToggle(value: boolean): void {
@@ -842,7 +821,7 @@ export struct SettingsPage {
   }
 
   // ---------------------------------------------------------------------------
-  // 播放分组：默认清晰度 + 默认倍速 + 播放内核 + 常显进度条
+  // 播放分组：默认清晰度 + 默认倍速 + 常显进度条
   // ---------------------------------------------------------------------------
 
   @Builder
@@ -879,34 +858,6 @@ export struct SettingsPage {
       .padding({ left: 12, right: 12, top: 6, bottom: 10 });
 
       Text('清晰度按站点源的顺序匹配；自动 = 使用站点第一个（最高）清晰度。')
-        .fontSize(Dimens.captionSize)
-        .fontColor(Theme.colors().textHint)
-        .lineHeight(16)
-        .width('100%')
-        .padding({ left: 12, right: 12, top: 2, bottom: 12 });
-
-      RowDivider();
-
-      // 播放内核：ExoPlayer 位（底层 HarmonyOS 系统 AVPlayer，默认）/ MPV（libmpv，FFmpeg）。
-      // 注意 exo 只是沿用了上游 Android 设置项的语义，本平台没有 ExoPlayer/Media3 组件。
-      // 写入 AppSettings 后由 AppStorage 镜像同步，视频页下次进入时读取。
-      this.cardHeader($r('app.media.ic_play'), '播放内核', '重新进入视频页生效');
-
-      Row() {
-        SegmentRow({
-          options: PLAYER_KERNEL_OPTIONS,
-          selectedIndex: playerKernelSelection(this.playerKernel),
-          onSelect: (index: number) => {
-            this.onPlayerKernelSelect(index);
-          }
-        });
-      }
-      .width('100%')
-      .padding({ left: 12, right: 12, top: 6, bottom: 10 });
-
-      Text('ExoPlayer：系统 AVPlayer 内核（默认，兼容性最好，支持 HLS/MP4，硬件解码）\n' +
-        'MPV：libmpv 内核（FFmpeg 全家桶，支持更多编码/容器与高级渲染，仅 arm64）\n' +
-        'MPV 播放失败会自动回退 ExoPlayer。')
         .fontSize(Dimens.captionSize)
         .fontColor(Theme.colors().textHint)
         .lineHeight(16)

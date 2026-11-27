@@ -6,8 +6,6 @@
 /oh_modules/
 /entry/oh_modules/
 *.har
-# 本地 MPV 播放内核 HAR 需要随仓库分发
-!entry/libs/*.har
 *.hap
 *.hsp
 

@@ -31,12 +31,11 @@ import {
   shouldFailoverResponse
 } from '../../entry/src/main/ets/core/util/SiteFailoverPolicy';
 
-/** 与 Constants.BASE_URL_OPTIONS 对应的 origin（无尾斜杠） */
+/** 与 Constants.BASE_URL_OPTIONS 对应的 origin（无尾斜杠）；AV 镜像站已从站点列表移除 */
 const OPTION_ORIGINS: string[] = [
   'https://hanime1.me',
   'https://hanime1.com',
-  'https://hanimeone.me',
-  'https://javchu.com'
+  'https://hanimeone.me'
 ];
 
 const EMPTY_HEADERS: Record<string, string> = {};
@@ -104,8 +103,8 @@ test('rewriteOrigin: 保留 path 与 query', () => {
 
 test('rewriteOrigin: 保留 hash 与多级路径', () => {
   assert.equal(
-    rewriteOrigin('https://hanime1.me/a/b/c?x=1&y=2#frag', 'https://javchu.com'),
-    'https://javchu.com/a/b/c?x=1&y=2#frag'
+    rewriteOrigin('https://hanime1.me/a/b/c?x=1&y=2#frag', 'https://hanimeone.me'),
+    'https://hanimeone.me/a/b/c?x=1&y=2#frag'
   );
 });
 
@@ -139,16 +138,12 @@ test('optionOrigins: 按配置顺序去重并规范化', () => {
 test('candidateOriginsAfter: 从失败站点之后开始环形轮询', () => {
   assert.deepEqual(
     candidateOriginsAfter(BASE_URL_OPTIONS, 'https://hanime1.me'),
-    ['https://hanime1.com', 'https://hanimeone.me', 'https://javchu.com']
-  );
-  assert.deepEqual(
-    candidateOriginsAfter(BASE_URL_OPTIONS, 'https://hanimeone.me/'),
-    ['https://javchu.com', 'https://hanime1.me', 'https://hanime1.com']
+    ['https://hanime1.com', 'https://hanimeone.me']
   );
   // 最后一个站点回绕到第一个
   assert.deepEqual(
-    candidateOriginsAfter(BASE_URL_OPTIONS, 'https://javchu.com'),
-    ['https://hanime1.me', 'https://hanime1.com', 'https://hanimeone.me']
+    candidateOriginsAfter(BASE_URL_OPTIONS, 'https://hanimeone.me/'),
+    ['https://hanime1.me', 'https://hanime1.com']
   );
 });
 
@@ -189,7 +184,7 @@ test('resolveFailoverCandidates: 正常情况从失败站点之后轮询', () =>
   assert.deepEqual(
     resolveFailoverCandidates(BASE_URL_OPTIONS, 'https://hanime1.me/', 'https://hanime1.me/',
       now, 0, 0, FAILOVER_SWITCH_COOLDOWN_MS, FAILOVER_RETRY_COOLDOWN_MS),
-    ['https://hanime1.com', 'https://hanimeone.me', 'https://javchu.com']
+    ['https://hanime1.com', 'https://hanimeone.me']
   );
 });
 
@@ -223,7 +218,7 @@ test('resolveFailoverCandidates: 冷却中返回空数组', () => {
     resolveFailoverCandidates(BASE_URL_OPTIONS, 'https://hanime1.me/', 'https://hanime1.me/',
       now, now - FAILOVER_SWITCH_COOLDOWN_MS, now - FAILOVER_RETRY_COOLDOWN_MS,
       FAILOVER_SWITCH_COOLDOWN_MS, FAILOVER_RETRY_COOLDOWN_MS),
-    ['https://hanime1.com', 'https://hanimeone.me', 'https://javchu.com']
+    ['https://hanime1.com', 'https://hanimeone.me']
   );
 });
 
@@ -364,15 +359,9 @@ test('候选轮询模拟: 候选站点 404/401 不算换站成功，继续找 2x
   const failedUrl: string = 'https://hanime1.me/watch?v=404';
   const candidates: string[] = candidateOriginsAfter(BASE_URL_OPTIONS, 'https://hanime1.me');
   const adopted: string = simulateCandidatePoll(failedUrl, candidates, (origin: string): number => {
-    if (origin === 'https://hanime1.com') {
-      return 404;
-    }
-    if (origin === 'https://hanimeone.me') {
-      return 401;
-    }
-    return 200;
+    return origin === 'https://hanime1.com' ? 404 : 200;
   });
-  assert.equal(adopted, 'https://javchu.com');
+  assert.equal(adopted, 'https://hanimeone.me');
 });
 
 test('候选轮询模拟: 候选全部返回 404 时不切站（保留原错误，避免误判站点可用）', () => {
@@ -407,7 +396,7 @@ test('切换冷却模拟: 切换成功后 60s 内不会继续切换，冷却结�
     resolveFailoverCandidates(BASE_URL_OPTIONS, 'https://hanime1.com/', 'https://hanime1.com/',
       now, now - FAILOVER_SWITCH_COOLDOWN_MS, 0,
       FAILOVER_SWITCH_COOLDOWN_MS, FAILOVER_RETRY_COOLDOWN_MS),
-    ['https://hanimeone.me', 'https://javchu.com', 'https://hanime1.me']
+    ['https://hanimeone.me', 'https://hanime1.me']
   );
 });
 

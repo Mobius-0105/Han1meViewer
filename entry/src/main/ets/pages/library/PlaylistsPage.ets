@@ -17,6 +17,7 @@ import { Glass } from '../../common/Glass';
 import { RouteParam, Router } from '../../common/Router';
 import { Toast } from '../../common/Toast';
 import { AppTopBar, EmptyView, ErrorView, LoadingView } from '../../components/common/Widgets';
+import { EmptyRefreshHeader, PullRefreshHeader } from '../../components/common/PullRefreshHeader';
 import { playlistCountText } from '../../viewmodel/library/LibraryViewModel';
 import { SessionActions } from '../../viewmodel/library/SessionActions';
 
@@ -37,6 +38,8 @@ export struct PlaylistsPage {
   @State loading: boolean = true;
   @State loadingMore: boolean = false;
   @State refreshing: boolean = false;
+  /** 下拉手势阶段：只给 PullRefreshHeader 换文案用（KHenTai GalleryListView.ets:197） */
+  @State refreshStatus: RefreshStatus = RefreshStatus.Inactive;
   @State errorMessage: string = '';
 
   private userId: string = '';
@@ -213,7 +216,7 @@ export struct PlaylistsPage {
       .width('100%')
       .layoutWeight(1);
     } else {
-      Refresh({ refreshing: $$this.refreshing }) {
+      Refresh({ refreshing: $$this.refreshing, builder: EmptyRefreshHeader }) {
         List() {
           // 悬浮顶栏让位 spacer：随列表滚走，卡片从顶栏下方经过
           ListItem() {
@@ -270,8 +273,14 @@ export struct PlaylistsPage {
       }
       .width('100%')
       .layoutWeight(1)
+      // 跟手 1:1 + 触发距离 110，与其它列表页同一套手感（KHenTai GalleryListView.ets:886-889）
+      .pullDownRatio(1)
+      .refreshOffset(110)
       .onRefreshing(() => {
         this.load(true);
+      })
+      .onStateChange((state: RefreshStatus) => {
+        this.refreshStatus = state;
       });
     }
   }
@@ -284,6 +293,13 @@ export struct PlaylistsPage {
       }
       .width('100%')
       .height('100%');
+
+      // 下拉刷新浮层：钉在悬浮顶栏下沿（列表首项 spacer 即顶栏总高）
+      PullRefreshHeader({
+        status: this.refreshStatus,
+        refreshing: this.refreshing,
+        topInset: this.statusBarHeight + Dimens.topBarHeight
+      });
 
       AppTopBar({ title: '我的清单', showBack: true });
     }

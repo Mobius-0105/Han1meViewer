@@ -105,22 +105,21 @@ node scripts/arkts-lint.mjs       # ArkTS 受限语法 + import + 资源引用�
 编译警告：`promptAction.showToast`、`AlertDialog.show`、`getContext` 等为了兼容旧 API 保留的写法在 API 26
 上会给出 deprecation 警告，不影响构建；如需消除可替换为 `UIContext` 对应新接口。
 
-## 6. MPV 播放内核（可选）
+## 6. 第三方依赖与播放内核
 
-`@mpv-ohos/mpv-arkts`（libmpv + FFmpeg 的 ArkTS 封装）作为**可选**播放内核集成，HAR 已随仓库
-放在 `entry/libs/`，无需联网下载；默认内核仍是系统 AVPlayer（设置页里叫 `ExoPlayer`）。
+**本工程没有第三方播放内核，也没有任何 native 库。** 播放只用系统 `AVPlayer`
+（`@kit.MediaKit`）+ `XComponent`，失败降级为系统 `Web` 组件；`entry/oh-package.json5`
+的 `dependencies` 为空对象，HAP 里不含 `.so`、不含额外体积。
 
-| 项 | 值 |
-| --- | --- |
-| HAR 文件 | `entry/libs/mpv-arkts-1.0.0.har`（约 16MB，含 arm64-v8a 的 `libmpv.so` 等） |
-| 依赖声明 | `entry/oh-package.json5` → `"@mpv-ohos/mpv-arkts": "file:./libs/mpv-arkts-1.0.0.har"` |
-| 许可证 | 封装层 **MIT**；内含 libmpv（LGPLv2.1+）/ FFmpeg（LGPLv3）动态库，说明见根目录 `THIRD_PARTY_NOTICES.md` |
-| 上游源码 | <https://github.com/mpv-ohos/mpv-arkts> |
-| ABI | 仅 **arm64-v8a**（x86_64 模拟器上无法播放 MPV） |
+历史说明：曾以本地 HAR 形式集成 `@mpv-ohos/mpv-arkts`（libmpv + FFmpeg，`entry/libs/mpv-arkts-1.0.0.har`），
+并配套 `logic/player/MpvKernel.ets` 与设置页的「播放内核」切换项。libmpv 在真机上无法起播
+（黑屏 / 无 error 事件），为避免「可切换内核」的误导，该内核、HAR、`buildOption.nativeLib`
+ABI 过滤与相关设置项已全部移除。HarmonyOS 也没有 ExoPlayer / Media3，因此不需要再考虑
+「换一个更兼容的内核」这条路。
 
 ### 6.1 安装依赖
 
-DevEco Studio 打开工程时会自动 Sync；命令行构建前需手动安装一次：
+DevEco Studio 打开工程时会自动 Sync；命令行构建前建议手动执行一次：
 
 ```powershell
 . D:\path\to\workspace\toolchain\env.ps1
@@ -128,41 +127,4 @@ cd D:\path\to\Han1meViewer-HarmonyOS
 ohpm install --all
 ```
 
-成功后出现 `entry/oh_modules/@mpv-ohos/mpv-arkts/`（指向 `oh_modules/.ohpm/` 下解包目录的链接），
-并生成 `entry/oh-package-lock.json5`。
-
-> 仓库的 `.gitignore` 默认忽略 `*.har`；提交仓库时需确保 `entry/libs/mpv-arkts-1.0.0.har`
-> 被跟踪（已有 `!entry/libs/*.har` 例外），否则新克隆的环境执行 `ohpm install` 会因找不到本地 HAR 而失败。
-
-### 6.2 native 库如何打进 HAP
-
-- hvigor 的 `ProcessLibs` 任务会自动收集依赖 HAR 的 `libs/<abi>/*.so`，经
-  `intermediates/libs` → `stripped_native_libs` → 打包工具的 `--lib-path` 写入 HAP 的
-  `libs/<abi>/*.so`；模块不需要额外声明 native 依赖（本地无 CMake/NAPI 源码）；
-- 设备是 arm64，MPV HAR 也只提供 arm64-v8a；HAP 默认 `compressNativeLibs=false`
-  （`.so` 不压缩），`libmpv.so` 会让 HAP 明显增大。`entry/build-profile.json5` 里保留：
-
-  ```json5
-  "buildOption": {
-    "nativeLib": {
-      "filter": {
-        "excludes": ["**/x86_64/**"]
-      }
-    }
-  }
-  ```
-
-  确保只打包 **arm64-v8a**。若换用带多 ABI 的 HAR，同样靠这段 `excludes` 控制体积；
-- 体积影响：HAP 里的 `libmpv.so` 约 35MB（HAR 内未 strip，HAP 的 `.so` 不压缩），
-  HAP 从约 3.7MB 增至约 41MB（实测 41,545,232 字节）；
-- MPV 内核不可用时上层会自动回退到 `ExoPlayer`（系统 AVPlayer），因此不装 MPV 也能正常播放。
-
-### 6.3 兼容性与已知风险
-
-- HAR 的 `compatibleSdkVersion` 为 20（`compatibleSdkType: HarmonyOS`），本工程目标 API 26 满足要求；
-  `api26`（OpenHarmony）product 下同样可引用；
-- 该 HAR 是 **byteCode HAR**（`metadata.byteCodeHar: true`），参与类型检查的只是它的 `.d.ets` 声明；
-  构建时会出现少量 `arkts-strict-typing-required` 等来自依赖包声明的 WARN，不影响打包；
-- MPV 为可选内核：初始化 / 加载 / 播放失败时，`InlinePlayer` 会置回 `exo` 重试系统 AVPlayer；
-- 若后续升级 HAR 版本，需同步更新 `entry/libs/` 文件名、`entry/oh-package.json5` 的 `file:` 路径，
-  并重新 `ohpm install`。
+`entry/oh-package-lock.json5` 由 `ohpm` 自动生成 / 更新，随仓库提交。

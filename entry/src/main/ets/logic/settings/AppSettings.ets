@@ -9,12 +9,13 @@
  *    必须 flush 才会真正写文件；
  *  - 关键 UI 项固定使用下面这些 AppStorage 键（与根 agent 约定）：
  *    baseUrl / backupCdn / themeMode / userId / username / avatarUrl / loggedIn /
- *    qualityIndex / playerSpeed / playerBottomProgress / playerKernel /
+ *    qualityIndex / playerSpeed / playerBottomProgress /
  *    screenOrientationLock（'system' | 'portrait' | 'landscape'）。
  *
  * 默认值对齐 Android Preferences：站点 https://hanime1.me/、默认 UA、备用 CDN 关闭、
- * 主题跟随系统、清晰度 -1（自动）、倍速 1.0、记录观看历史开启、
- * 播放内核 exo（ExoPlayer 位，底层是系统 AVPlayer）、屏幕方向跟随系统。屏幕方向锁由本文件提供 preferredOrientationOf / applyScreenOrientationLock，
+ * 主题跟随系统、清晰度 -1（自动）、倍速 1.0、记录观看历史开启、屏幕方向跟随系统。
+ * 播放内核固定为系统 AVPlayer（HarmonyOS 无 ExoPlayer，libmpv 真机无法起播已移除），
+ * 不再提供内核设置项。屏幕方向锁由本文件提供 preferredOrientationOf / applyScreenOrientationLock，
  * EntryAbility 启动与设置页切换时直接调用（PuraPily 风格的方向设置项）。
  */
 
@@ -46,11 +47,6 @@ const KEY_WATCH_HISTORY_ENABLED: string = 'watchHistoryEnabled';
 const KEY_USE_IMMERSIVE_MATERIAL: string = 'useImmersiveMaterial';
 /** 是否在播放器最底部常显一条细进度条（不随控制层显隐，默认开启） */
 const KEY_PLAYER_BOTTOM_PROGRESS: string = 'playerBottomProgress';
-/**
- * 播放内核：'exo' = ExoPlayer 位（底层系统 AVPlayer，默认）；'mpv' = libmpv。
- * 键名保持 playerKernel 不变，老版本写入的 'av' / 'ijk' 在读取时迁移（见 normalizePlayerKernel）。
- */
-const KEY_PLAYER_KERNEL: string = 'playerKernel';
 /** 主题强调色（PuraPily 风格：默认 #007DFF，可切换） */
 const KEY_THEME_COLOR: string = 'themeColor';
 const DEFAULT_THEME_COLOR: string = '#007DFF';
@@ -65,24 +61,6 @@ const KEY_SCREEN_ORIENTATION_LOCK: string = 'screenOrientationLock';
 const SCREEN_ORIENTATION_SYSTEM: string = 'system';
 const SCREEN_ORIENTATION_PORTRAIT: string = 'portrait';
 const SCREEN_ORIENTATION_LANDSCAPE: string = 'landscape';
-
-/**
- * 播放内核取值：
- *  - 'exo'：ExoPlayer 位。名字沿用上游 Android 的设置项语义（两端设置项含义一一对应），
- *    底层实现是 HarmonyOS 系统 AVPlayer + XComponent(SURFACE)——HarmonyOS 上并没有
- *    ExoPlayer / Media3，这里**不是** Android 的 ExoPlayer；
- *  - 'mpv'：libmpv（@mpv-ohos/mpv-arkts，内含 FFmpeg），失败时上层回退 'exo'。
- */
-const PLAYER_KERNEL_EXO: string = 'exo';
-const PLAYER_KERNEL_MPV: string = 'mpv';
-
-/**
- * 历史遗留取值，只用于升级迁移、不再写入：
- *  - 'av'：旧版默认（系统 AVPlayer），语义等同现在的 'exo'；
- *  - 'ijk'：旧版可选内核 @ohos/ijkplayer，已被 mpv 内核取代，语义归入 'mpv'。
- */
-const LEGACY_PLAYER_KERNEL_AV: string = 'av';
-const LEGACY_PLAYER_KERNEL_IJK: string = 'ijk';
 
 /** -1 = 自动（跟随视频源顺序）；>=0 时是清晰度列表下标。 */
 const QUALITY_AUTO: number = -1;
@@ -163,18 +141,6 @@ function normalizePlayerSpeed(raw: number): number {
   return raw;
 }
 
-/**
- * 播放内核归一：只接受 'exo' / 'mpv'。
- * 历史值走迁移而不是丢弃——'av'（旧默认）→ 'exo'，'ijk'（已移除的 IJK 内核）→ 'mpv'，
- * 让老用户升级后原来的选择仍然生效；其余脏数据 / 空值统一回退默认 'exo'（兼容性最好）。
- */
-function normalizePlayerKernel(raw: string): string {
-  if (raw === PLAYER_KERNEL_MPV || raw === LEGACY_PLAYER_KERNEL_IJK) {
-    return PLAYER_KERNEL_MPV;
-  }
-  return PLAYER_KERNEL_EXO;
-}
-
 export class AppSettings {
   private static instance: AppSettings | null = null;
 
@@ -194,8 +160,6 @@ export class AppSettings {
   private watchHistoryEnabled: boolean = true;
   private useImmersiveMaterial: boolean = true;
   private playerBottomProgress: boolean = true;
-  /** 'exo' = 系统 AVPlayer（默认，沿用上游 ExoPlayer 语义）；'mpv' = libmpv（失败回退 exo） */
-  private playerKernel: string = PLAYER_KERNEL_EXO;
   private themeColor: string = DEFAULT_THEME_COLOR;
   /** 屏幕方向锁：'system'（默认）/ 'portrait' / 'landscape' */
   private screenOrientationLock: ScreenOrientationLock = 'system';
@@ -392,17 +356,6 @@ export class AppSettings {
     this.persist(KEY_PLAYER_BOTTOM_PROGRESS, this.playerBottomProgress);
   }
 
-  /** 播放内核：'exo'（默认，系统 AVPlayer）/ 'mpv'（libmpv）。 */
-  getPlayerKernel(): string {
-    return this.playerKernel;
-  }
-
-  setPlayerKernel(value: string): void {
-    this.playerKernel = normalizePlayerKernel(value);
-    AppStorage.setOrCreate<string>('playerKernel', this.playerKernel);
-    this.persist(KEY_PLAYER_KERNEL, this.playerKernel);
-  }
-
   // ---------------------------------------------------------------------------
   // 隐私
   // ---------------------------------------------------------------------------
@@ -462,7 +415,6 @@ export class AppSettings {
     this.watchHistoryEnabled = this.readBoolean(KEY_WATCH_HISTORY_ENABLED, true);
     this.useImmersiveMaterial = this.readBoolean(KEY_USE_IMMERSIVE_MATERIAL, true);
     this.playerBottomProgress = this.readBoolean(KEY_PLAYER_BOTTOM_PROGRESS, true);
-    this.playerKernel = normalizePlayerKernel(this.readString(KEY_PLAYER_KERNEL, PLAYER_KERNEL_EXO));
     this.themeColor = this.readString(KEY_THEME_COLOR, DEFAULT_THEME_COLOR);
     this.screenOrientationLock =
       normalizeScreenOrientationLock(this.readString(KEY_SCREEN_ORIENTATION_LOCK, SCREEN_ORIENTATION_SYSTEM));
@@ -481,7 +433,6 @@ export class AppSettings {
     AppStorage.setOrCreate<number>('playerSpeed', this.playerSpeed);
     AppStorage.setOrCreate<boolean>('useImmersiveMaterial', this.useImmersiveMaterial);
     AppStorage.setOrCreate<boolean>('playerBottomProgress', this.playerBottomProgress);
-    AppStorage.setOrCreate<string>('playerKernel', this.playerKernel);
     AppStorage.setOrCreate<string>('themeColor', this.themeColor);
     AppStorage.setOrCreate<string>('screenOrientationLock', this.screenOrientationLock);
   }

@@ -37,6 +37,7 @@ import { Toast } from '../../common/Toast';
 import { EmptyView, ErrorView, LoadingView, SectionHeader, VideoCard, TOP_CONTROL_SIZE } from '../../components/common/Widgets';
 import { MaterialSurface } from '../../components/common/MaterialSurface';
 import { GlassCapsule } from '../../components/common/GlassCapsule';
+import { EmptyRefreshHeader, PullRefreshHeader } from '../../components/common/PullRefreshHeader';
 import { BannerState, HomeSection, buildBanner, buildHomeSections } from '../../viewmodel/home/HomeViewModel';
 
 /** 轮播高度与圆角（PuraPily：高度固定 338、大面板圆角 30）。 */
@@ -189,6 +190,11 @@ export struct HomePage {
   @State heroIndex: number = 0;
   @State loading: boolean = true;
   @State refreshing: boolean = false;
+  /**
+   * 下拉手势阶段：只给 PullRefreshHeader 换文案/箭头用，不参与任何数据逻辑
+   * （请求仍由 onRefreshing 触发）。与 KHenTai GalleryListView.ets:197 同一个做法。
+   */
+  @State refreshStatus: RefreshStatus = RefreshStatus.Inactive;
   @State errorMessage: string = '';
   /** 错误是否为 Cloudflare 验证（是则额外给「去验证」按钮） */
   @State needVerify: boolean = false;
@@ -893,7 +899,7 @@ export struct HomePage {
         .height('100%')
         .padding({ top: this.headerHeight() });
       } else {
-        Refresh({ refreshing: $$this.refreshing }) {
+        Refresh({ refreshing: $$this.refreshing, builder: EmptyRefreshHeader }) {
           Grid() {
             // 内容内 spacer（跨全部列）：透明占位，随内容一起滚动
             GridItem() {
@@ -990,10 +996,27 @@ export struct HomePage {
         }
         .width('100%')
         .height('100%')
+        // 跟手比例 1：手指下拉多少、内容就下移多少。系统默认 0.5 时下拉 40 只位移 20，
+        // 手感发「黏」、指示器还被吃掉一半（KHenTai GalleryListView.ets:887-889）。
+        .pullDownRatio(1)
+        // 触发距离 64 → 110：指示器可见性已交给浮层（下拉阶段就出现），
+        // 这里只影响「要拉多深才触发刷新」，往大调是为了减少滚到顶时的手势误触（KHenTai :881-886）。
+        .refreshOffset(110)
         .onRefreshing(() => {
           this.loadHome(true);
+        })
+        // 只记录阶段供浮层分支，不产生任何副作用
+        .onStateChange((state: RefreshStatus) => {
+          this.refreshStatus = state;
         });
       }
+
+      // 刷新状态浮层：钉在悬浮顶栏下沿（topInset = 顶栏总高），与 7 个页面共用同一个组件。
+      PullRefreshHeader({
+        status: this.refreshStatus,
+        refreshing: this.refreshing,
+        topInset: this.headerHeight()
+      });
 
       // 悬浮顶栏层（最后绘制，盖在内容之上）：背景层 hitTest None，不挡内容滚动
       this.homeHeader();

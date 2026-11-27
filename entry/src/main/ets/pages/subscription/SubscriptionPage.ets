@@ -28,6 +28,7 @@ import { Toast } from '../../common/Toast';
 import { EmptyView, ErrorView, LoadingView, VideoCard, TOP_CONTROL_SIZE } from '../../components/common/Widgets';
 import { MaterialSurface } from '../../components/common/MaterialSurface';
 import { GlassCapsule } from '../../components/common/GlassCapsule';
+import { EmptyRefreshHeader, PullRefreshHeader } from '../../components/common/PullRefreshHeader';
 import { SessionActions } from '../../viewmodel/library/SessionActions';
 
 /** 首屏 / 每页最多展示的视频条数（上游每页 60 条，这里按 2 列网格密度收窄） */
@@ -63,6 +64,8 @@ export struct SubscriptionPage {
   @State loading: boolean = false;
   @State loadingMore: boolean = false;
   @State refreshing: boolean = false;
+  /** 下拉手势阶段：只给 PullRefreshHeader 换文案用（KHenTai GalleryListView.ets:197） */
+  @State refreshStatus: RefreshStatus = RefreshStatus.Inactive;
   @State errorMessage: string = '';
   @State hasData: boolean = false;
   /** 页面宽度（onAreaChange 更新）：驱动横屏 / 宽屏下的网格列数断点（与首页一致） */
@@ -594,7 +597,7 @@ export struct SubscriptionPage {
   /** 已登录内容：下拉刷新 + 断点列数网格（作者区 / 标题 / 视频卡片 / 分页） */
   @Builder
   subscriptionContent() {
-    Refresh({ refreshing: $$this.refreshing }) {
+    Refresh({ refreshing: $$this.refreshing, builder: EmptyRefreshHeader }) {
       Grid() {
         // 内容内 spacer（跨全部列）：透明占位，随内容一起滚动，滚出后内容从悬浮顶栏下方穿过
         GridItem() {
@@ -669,8 +672,14 @@ export struct SubscriptionPage {
     }
     .width('100%')
     .height('100%')
+    // 跟手 1:1 + 触发距离 110，与首页/列表页同一套手感（KHenTai GalleryListView.ets:886-889）
+    .pullDownRatio(1)
+    .refreshOffset(110)
     .onRefreshing(() => {
       this.loadFirst(true);
+    })
+    .onStateChange((state: RefreshStatus) => {
+      this.refreshStatus = state;
     });
   }
 
@@ -702,6 +711,13 @@ export struct SubscriptionPage {
       } else {
         this.subscriptionContent();
       }
+
+      // 下拉刷新浮层：钉在悬浮顶栏下沿（网格首行 spacer = 顶栏总高 - rowsGap）
+      PullRefreshHeader({
+        status: this.refreshStatus,
+        refreshing: this.refreshing,
+        topInset: this.headerHeight()
+      });
 
       // 悬浮顶栏层（最后绘制，盖在内容之上）：背景层 hitTest None，不挡内容滚动
       this.pageHeader();

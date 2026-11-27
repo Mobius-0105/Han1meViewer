@@ -1,19 +1,7 @@
 {
   "apiType": "stageMode",
-  "buildOption": {
-    // MPV 播放内核（@mpv-ohos/mpv-arkts，见 entry/oh-package.json5）的 HAR 带
-    // arm64-v8a 的 libmpv.so / libmpv_wrapper.so / libaki_jsbind.so；真机/上架只需 arm64-v8a。
-    // HAP 默认 compressNativeLibs=false（.so 不压缩），多余 ABI 会让 HAP 明显增大，
-    // 因此这里排除 x86_64，只把 arm64-v8a/*.so 打进 HAP（MPV 内核本身也仅支持 arm64）。
-    // 如需在 x86_64 模拟器上跑 MPV 播放，删除下面的 excludes 后重新构建即可。
-    "nativeLib": {
-      "filter": {
-        "excludes": [
-          "**/x86_64/**"
-        ]
-      }
-    }
-  },
+  // 工程内已无任何 native 库（libmpv 已整体移除，播放只用系统 AVPlayer），
+  // 原先给 IJK / mpv 用的 buildOption.nativeLib.filter.excludes 已无意义，一并删除。
   "buildOptionSet": [
     {
       "name": "release",

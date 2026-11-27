@@ -13,6 +13,7 @@ import { Theme, Dimens } from '../../common/Theme';
 import { RouteParam } from '../../common/Router';
 import { Toast } from '../../common/Toast';
 import { AppTopBar, EmptyView, ErrorView, LoadingView, VideoListTile } from '../../components/common/Widgets';
+import { EmptyRefreshHeader, PullRefreshHeader } from '../../components/common/PullRefreshHeader';
 
 @Component
 export struct PlaylistDetailPage {
@@ -32,6 +33,8 @@ export struct PlaylistDetailPage {
   @State loading: boolean = true;
   @State loadingMore: boolean = false;
   @State refreshing: boolean = false;
+  /** 下拉手势阶段：只给 PullRefreshHeader 换文案用（KHenTai GalleryListView.ets:197） */
+  @State refreshStatus: RefreshStatus = RefreshStatus.Inactive;
   @State errorMessage: string = '';
 
   private disposed: boolean = false;
@@ -133,7 +136,7 @@ export struct PlaylistDetailPage {
       .width('100%')
       .layoutWeight(1);
     } else {
-      Refresh({ refreshing: $$this.refreshing }) {
+      Refresh({ refreshing: $$this.refreshing, builder: EmptyRefreshHeader }) {
         // VideoListTile 自带上下各 5vp 外边距，List space 2 补足 12vp 列表项间距
         List({ space: 2 }) {
           // 悬浮顶栏让位 spacer：随列表滚走，内容从顶栏下方经过
@@ -204,8 +207,14 @@ export struct PlaylistDetailPage {
       }
       .width('100%')
       .layoutWeight(1)
+      // 跟手 1:1 + 触发距离 110，与其它列表页同一套手感（KHenTai GalleryListView.ets:886-889）
+      .pullDownRatio(1)
+      .refreshOffset(110)
       .onRefreshing(() => {
         this.load(true);
+      })
+      .onStateChange((state: RefreshStatus) => {
+        this.refreshStatus = state;
       });
     }
   }
@@ -218,6 +227,13 @@ export struct PlaylistDetailPage {
       }
       .width('100%')
       .height('100%');
+
+      // 下拉刷新浮层：钉在悬浮顶栏下沿（列表首项 spacer 即顶栏总高）
+      PullRefreshHeader({
+        status: this.refreshStatus,
+        refreshing: this.refreshing,
+        topInset: this.statusBarHeight + Dimens.topBarHeight
+      });
 
       AppTopBar({
         title: this.p.title.length > 0 ? this.p.title : '播放清单',

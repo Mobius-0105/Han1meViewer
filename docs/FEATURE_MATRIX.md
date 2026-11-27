@@ -37,12 +37,12 @@
 | 上游功能 | 状态 | 说明 |
 | --- | --- | --- |
 | 视频详情（简介/作者/标签/系列/相关） | ✅ | |
-| 在线播放 | ✅ | ExoPlayer（系统 AVPlayer，默认）或 MPV（libmpv，FFmpeg）播放 HLS/MP4 |
+| 在线播放 | ✅ | 系统 AVPlayer（单一内核）播放 HLS/MP4；失败自动降级网页播放 |
 | 清晰度切换 | ✅ | 依据 `<source size>` |
 | 倍速播放 | ✅ | PlaybackSpeed 枚举档位 |
 | 画中画 | ❌ | 鸿蒙 PiP 能力未接入 |
 | 全屏 | 🟡 | 播放器页内布局全屏（不改窗口方向） |
-| 播放内核切换（Media3/MPV） | ✅ | 设置页「播放」分组可在 ExoPlayer（系统 AVPlayer）+ MPV（`@mpv-ohos/mpv-arkts` 1.0.0）间切换；MPV 播放失败自动回退 ExoPlayer。HarmonyOS 无 ExoPlayer/Media3，本项目 `exo` 内核 = 系统 AVPlayer 实现，仅保留上游的接口语义 |
+| 播放内核切换（Media3/MPV） | ❌（不提供） | 只保留**系统 AVPlayer 单一内核**，设置页已删除「播放内核」项。原因：HarmonyOS 无 ExoPlayer / Media3；尝试过的 libmpv（`@mpv-ohos/mpv-arkts`）在真机上无法起播，已整体移除，避免「可切换内核」的误导 |
 | 本地下载文件播放 | ❌ | 无下载功能 |
 | 播放进度记忆 | ✅ | 本地历史记录 positionMs |
 
@@ -112,9 +112,10 @@
 
 ## 有意为之的差异
 
-1. **除可选的 MPV 播放内核（`@mpv-ohos/mpv-arkts`，封装层 MIT，内含 libmpv/FFmpeg LGPL 动态库，HAR 本地依赖）外不引入任何第三方库**
-   （含 Firebase / Room / Retrofit），其余全部使用系统 Kit；不启用 MPV 时仅系统 AVPlayer；
+1. **不引入任何第三方库**（含 Firebase / Room / Retrofit / 播放内核），全部使用系统 Kit；
+   播放只用系统 AVPlayer；
 2. **不收集任何用户数据**，无埋点、无崩溃上报；
-3. 播放器默认 ExoPlayer（HarmonyOS 上即系统 AVPlayer）；设置里可切换 MPV（libmpv，FFmpeg），
-   MPV 初始化或播放失败自动回退 ExoPlayer，仍失败再降级为网页播放，保证"能看"优先；
+3. 播放器固定使用系统 AVPlayer（单一内核，仅此一条播放路径）；原生播放失败（地址无效 / CDN
+   不可达 / 解码不支持）时降级网页播放，保证"能看"优先。HarmonyOS 没有 ExoPlayer / Media3，
+   试过的 libmpv 在真机上无法起播，已移除；
 4. 评论区、收藏等写操作在未登录时统一引导到登录页，不静默失败。

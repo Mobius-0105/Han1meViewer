@@ -29,6 +29,7 @@ import { Glass } from '../../common/Glass';
 import { RouteParam, Router } from '../../common/Router';
 import { Toast } from '../../common/Toast';
 import { AppTopBar, EmptyView, ErrorView, LoadingView, VideoListTile } from '../../components/common/Widgets';
+import { EmptyRefreshHeader, PullRefreshHeader } from '../../components/common/PullRefreshHeader';
 import { SegmentRow } from './LibraryComponents';
 import { SessionActions } from '../../viewmodel/library/SessionActions';
 import {
@@ -82,6 +83,11 @@ export struct FavoritesPage {
   @State watchLater: LocalVideoRecord[] = [];
   @State loading: boolean = true;
   @State refreshing: boolean = false;
+  /**
+   * 下拉手势阶段：两种布局（本地网格 / 站点列表）的两个 Refresh 共用一份，
+   * 只给 PullRefreshHeader 换文案用，不参与数据逻辑（KHenTai GalleryListView.ets:197）。
+   */
+  @State refreshStatus: RefreshStatus = RefreshStatus.Inactive;
   @State hasLoaded: boolean = false;
 
   @State onlineItems: HanimeInfo[] = [];
@@ -620,7 +626,7 @@ export struct FavoritesPage {
       .width('100%')
       .height('100%');
     } else {
-      Refresh({ refreshing: $$this.refreshing }) {
+      Refresh({ refreshing: $$this.refreshing, builder: EmptyRefreshHeader }) {
         // 卡片自身不再带水平 margin，左右 12 边距由 List 横向 padding 提供；
         // 首个 ListItem 是悬浮顶栏让位 spacer（随列表滚走）。
         List({ space: 8 }) {
@@ -648,8 +654,14 @@ export struct FavoritesPage {
       }
       .width('100%')
       .height('100%')
+      // 跟手 1:1 + 触发距离 110（同 KHenTai GalleryListView.ets:886-889）
+      .pullDownRatio(1)
+      .refreshOffset(110)
       .onRefreshing(() => {
         this.loadLocal(true);
+      })
+      .onStateChange((state: RefreshStatus) => {
+        this.refreshStatus = state;
       });
     }
   }
@@ -717,7 +729,7 @@ export struct FavoritesPage {
       .width('100%')
       .height('100%');
     } else {
-      Refresh({ refreshing: $$this.refreshing }) {
+      Refresh({ refreshing: $$this.refreshing, builder: EmptyRefreshHeader }) {
         // VideoListTile 自带上下各 5vp 外边距，List space 2 补足 12vp 列表项间距；
         // List 不加横向 padding，由每个 ListItem 的 calc 包装让卡片自带的 12vp 外边距完整可见。
         List({ space: 2 }) {
@@ -779,8 +791,14 @@ export struct FavoritesPage {
       }
       .width('100%')
       .height('100%')
+      // 与本地布局同一套手感参数（两个 Refresh 必须一致，否则切模式时手会「变」）
+      .pullDownRatio(1)
+      .refreshOffset(110)
       .onRefreshing(() => {
         this.loadOnline(true);
+      })
+      .onStateChange((state: RefreshStatus) => {
+        this.refreshStatus = state;
       });
     }
   }
@@ -794,6 +812,14 @@ export struct FavoritesPage {
       } else {
         this.localContent();
       }
+
+      // 下拉刷新浮层：本地 / 在线两个 Refresh 共用一颗，钉在悬浮顶栏下沿
+      // （列表首项 spacer 就是 statusBarHeight + topBarHeight，见 topSpacer 的注释）。
+      PullRefreshHeader({
+        status: this.refreshStatus,
+        refreshing: this.refreshing,
+        topInset: this.statusBarHeight + Dimens.topBarHeight
+      });
 
       AppTopBar({
         title: isOnlineListMode(this.onlineMode) ? onlineListTitle(this.onlineMode) : LOCAL_PAGE_TITLE,

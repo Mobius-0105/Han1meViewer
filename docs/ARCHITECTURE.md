@@ -62,16 +62,19 @@ VideoPage
 ### 2.3 播放器
 
 ```text
-PlayerPage（设置项 playerKernel：'exo' 默认 / 'mpv'；MPV 失败自动回退 exo）
-  ├─ exo：ExoPlayer 位，HarmonyOS 上由系统 AVPlayer 实现 —— XComponent(SURFACE) + media.createAVPlayer()
-  │    ├─ media.createAVMediaSourceWithUrl(url, headers)   // Referer / UA / Cookie
+InlinePlayer（系统 AVPlayer，单一内核；无播放内核设置项）
+  ├─ XComponent(SURFACE) + media.createAVPlayer()
+  │    ├─ media.createMediaSourceWithUrl(url, headers)   // Referer / UA / Cookie
   │    ├─ AVPlayer.surfaceId → prepare() → play()
-  │    ├─ 事件：stateChange / timeUpdate / durationUpdate / error
-  │    ├─ 清晰度：切换 source 后 prepare + seek 回原进度
+  │    ├─ 事件：stateChange / timeUpdate / durationUpdate / seekDone / error
+  │    ├─ 清晰度：切换 source 后 reset + prepare + seek 回原进度
   │    └─ 进度记录：节流 5s → LocalRepo.recordWatch()
-  ├─ mpv：MpvKernel（@mpv-ohos/mpv-arkts → libmpv + FFmpeg，仅 arm64）
-  └─ 降级：两个内核都报错 / 无 source → Web(watchUrl)
+  └─ 降级：AVPlayer 失败（含 12s 加载超时 / 自动重试 3 次用尽）→ Web(watchUrl)
 ```
+
+HarmonyOS 没有 ExoPlayer / Media3，上游 Android 版的「ExoPlayer 内核」在这里就等价于系统
+`AVPlayer`。曾尝试接入 libmpv（`@mpv-ohos/mpv-arkts`）作为第二内核，但真机上无法起播，
+已连同设置项一并移除：内核不可切换，降级链只有 `AVPlayer → Web` 两段。
 
 ### 2.4 登录与 Cookie
 
@@ -168,7 +171,7 @@ IP 被封禁（`you have been blocked`）与视频不存在（其它 403/500）�
 | 状态管理 | ViewModel + StateFlow | 页面 `@State` + `logic` 单例 + `AppStorage` 跨页共享 |
 | 导航 | Navigation Compose | `Navigation` + `NavPathStack` |
 | 后台下载 | WorkManager + Room | 未实现（见 FEATURE_MATRIX） |
-| 播放内核 | Media3 / MPV + 自研控制器 | ExoPlayer 位（系统 AVPlayer）+ MPV（libmpv，可选）+ Web 降级。HarmonyOS 无 ExoPlayer/Media3，本项目 `exo` 内核 = 系统 AVPlayer 实现，仅保留上游的接口语义 |
+| 播放内核 | Media3 / MPV + 自研控制器 | **系统 AVPlayer（单一内核）** + Web 降级。HarmonyOS 无 ExoPlayer/Media3，上游的「ExoPlayer 内核」等价于系统 AVPlayer；libmpv 真机无法起播已移除，不再提供可切换内核 |
 | 崩溃/分析 | Firebase Crashlytics/Analytics | 未接入（不上传任何数据） |
 | 公告 | Firebase RTDB | 未实现 |
 | 更新检查 | GitHub Releases API | 未实现（设置页提供项目链接） |

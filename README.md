@@ -21,7 +21,7 @@
 | 首页 | banner、最新上市 / 最新上传 / 里番 / 泡面番 / Motion / 3DCG / 2.5D / 2D / AI / MMD / Cosplay / 他们在看 / 新番预告 分区横向卡片 |
 | 搜索 | 关键词搜索、结果网格、分页、搜索历史、高级搜索（类型 / 排序 / 时长 / 日期 / 品牌 / 7 组标签多选）；从首页搜索胶囊进入（独立页） |
 | **视频（v1.4.0）** | **播放器 +「简介 / 评论」双标签**：简介 tab = 可展开简介/标签/系列/单列推荐卡片；评论 tab = 评论列表 + 悬浮输入条（沉浸材质，分页/回复/点赞/发评论） |
-| 播放 | 内核可选 ExoPlayer（系统 `AVPlayer`，默认）/ MPV（libmpv）；HLS/MP4、清晰度、倍速、续播、进度记忆、**视频比例自适应、页内横屏全屏、控制层 3 秒自动隐藏**，失败自动降级网页播放；带「复制播放地址 / 浏览器打开」排查入口 |
+| 播放 | 系统 `AVPlayer`（单一内核，无内核切换）；HLS/MP4、清晰度、倍速、续播、进度记忆、**视频比例自适应、页内横屏全屏、控制层 3 秒自动隐藏**，失败自动降级网页播放；带「复制播放地址 / 浏览器打开」排查入口 |
 | 评论 | 首屏 + offset 分页、展开子回复、发评论/回复、点赞 |
 | 我的订阅 | 登录后查看订阅的作者与更新视频（`GET /subscriptions`），分页加载、点击作者跳搜索、点击视频进详情 |
 | 账号 | **网页登录 / 账号密码 / 手动 Cookie 三种方式**；登录态三级校验（`/login` 404 → 首页用户信息 → `/subscriptions`，网页登录失败按 Cookie 信任）；账号资料、在线清单/历史、登录过期自动清理、登出 |
@@ -49,7 +49,7 @@
 | 网络 | `@kit.NetworkKit` 的 `http` + 自研 Cookie 管理 |
 | HTML 解析 | 自研迷你 DOM + CSS 选择器（`core/parser/HtmlDom.ts`），对齐上游 Jsoup 用法 |
 | 存储 | `relationalStore`（收藏/历史/搜索历史）+ `preferences`（设置） |
-| 播放 | `@kit.MediaKit` 的 `AVPlayer` + `XComponent`（exo 内核），可选 `@mpv-ohos/mpv-arkts`（MPV），降级 `Web` |
+| 播放 | `@kit.MediaKit` 的 `AVPlayer` + `XComponent`（单一内核，无三方播放库），降级 `Web` |
 | 网页能力 | `@kit.ArkWeb`（登录、Cloudflare 验证、网页播放） |
 | 玻璃材质 | API 26 `uiMaterial` + `systemMaterial`；降级 `backgroundBlurStyle` |
 | 测试 | Node + `tsx` 纯 TS 单测；`scripts/arkts-lint.mjs` 静态检查 |
@@ -149,8 +149,8 @@ node scripts/arkts-lint.mjs
 - `logic/network/HCookieJar.kt` + `Preferences.kt`（cookie）→ `logic/net/CookieStore.ets`
 - `logic/dao/*.kt`（Room）→ `logic/db/AppDb.ets`（relationalStore）
 - `ui/screen/**`（Compose）→ `pages/**`（ArkUI，视频详情与播放合并为单页）
-- 播放内核（Media3 / MPV）→ ExoPlayer 位（系统 `AVPlayer`，HLS/MP4）+ MPV（libmpv，可选）+ 内嵌播放器 + 全屏播放页 + Web 降级
-  （HarmonyOS 无 ExoPlayer/Media3，`exo` 内核 = 系统 AVPlayer 实现，仅保留上游接口语义）
+- 播放内核（Media3 / MPV）→ 系统 `AVPlayer`（单一内核，HLS/MP4）+ 内嵌播放器 + 全屏播放页 + Web 降级
+  （HarmonyOS 无 ExoPlayer/Media3；libmpv 真机无法起播，已移除，不再提供内核切换）
 
 ## 📄 许可证与修改说明
 

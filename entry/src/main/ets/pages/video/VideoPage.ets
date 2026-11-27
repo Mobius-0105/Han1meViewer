@@ -142,6 +142,7 @@ import {
   commentSortLabel
 } from '../../core/parser/CommentParser';
 import {
+  applyArtistSubscribed,
   applyVideoFavorite,
   applyVideoRating,
   buildLocalRecord,
@@ -154,6 +155,7 @@ import { InlinePlayer, InlinePlayerHandle } from './InlinePlayer';
 import { ErrorStateView, InlineEmptyRow, InlineErrorRow, InlineLoadingRow } from './StateViews';
 import { RelatedVideoCard } from './RelatedVideoCard';
 import { GlassCapsule } from '../../components/common/GlassCapsule';
+import { EmptyRefreshHeader, PullRefreshHeader } from '../../components/common/PullRefreshHeader';
 import { Material } from '../../common/Material';
 import { notifyLibraryChanged, MY_LIST_TYPE_SAVES } from '../../viewmodel/library/LibraryViewModel';
 import { SessionActions } from '../../viewmodel/library/SessionActions';
@@ -313,7 +315,15 @@ const RELATED_GRID_BOTTOM_LANDSCAPE: number = 16;
  *    内容超过面板高度上限后由网格自身竖向滚动（scrollBar Auto），不与简介页 Scroll 抢手势。
  */
 const AUTHOR_WORKS_BUTTON_HEIGHT: number = 26;
-const AUTHOR_WORKS_LIMIT: number = 20;
+/**
+ * 作者作品最多翻多少页 / 最多保留多少条。
+ *
+ * 站点搜索每页约 20 条，旧实现只取第 1 页并截断 20 条 —— 作者的其它作品（尤其是
+ * 排在第 1 页之后的）根本不会出现，用户看到的就是「列表到某一条就断了」。
+ * 现在按 SearchPage.maxPage 一直翻到底，只用一个防跑飞的上限兜住异常站点。
+ */
+const AUTHOR_WORKS_MAX_PAGES: number = 12;
+const AUTHOR_WORKS_MAX_ITEMS: number = 240;
 const AUTHOR_WORKS_PANEL_WIDTH_RATIO: number = 0.92;
 const AUTHOR_WORKS_PANEL_MAX_WIDTH: number = 560;
 const AUTHOR_WORKS_PANEL_MAX_HEIGHT_RATIO: number = 0.78;
@@ -361,26 +371,46 @@ function dedupeRelatedItems(items: HanimeInfo[]): HanimeInfo[] {
 }
 
 /**
- * 作者作品列表规范化：搜索结果里可能包含当前正在看的视频本身 / 重复条目，
- * 直接用于 ForEach 会产生重复 key 与重复卡片，因此先排除当前 videoCode、按 videoCode 去重，
- * 再最多保留前 AUTHOR_WORKS_LIMIT（20）条；统一生成新数组供 @State 整体重赋值。
+ * 作者作品列表规范化：**保留当前正在播放的这一条**，只按 videoCode 去重并跳过空 code。
+ *
+ * 旧实现会排除当前 videoCode 并截断前 20 条 —— 结果是「当前作品」以及它之后的作品一起消失，
+ * 面板看起来像只显示了一半。现在当前作品照常展示，由 UI 在卡片上标「正在播放」并加播放动画。
  */
-function normalizeAuthorWorks(items: HanimeInfo[], excludeCode: string): HanimeInfo[] {
+function normalizeAuthorWorks(items: HanimeInfo[]): HanimeInfo[] {
   const result: HanimeInfo[] = [];
   const seen: Set<string> = new Set<string>();
   for (let i: number = 0; i < items.length; i++) {
     const item: HanimeInfo = items[i];
     const code: string = item.videoCode;
-    if (code.length === 0 || code === excludeCode || seen.has(code)) {
+    if (code.length === 0 || seen.has(code)) {
       continue;
     }
     seen.add(code);
     result.push(item);
-    if (result.length >= AUTHOR_WORKS_LIMIT) {
+  }
+  return result;
+}
+
+/** 追加一页结果：按 videoCode 去重（保留已有顺序），返回新数组供 @State 整体重赋值 */
+function appendAuthorWorks(current: HanimeInfo[], more: HanimeInfo[]): HanimeInfo[] {
+  const merged: HanimeInfo[] = current.slice(0);
+  const seen: Set<string> = new Set<string>();
+  for (let i: number = 0; i < merged.length; i++) {
+    seen.add(merged[i].videoCode);
+  }
+  for (let i: number = 0; i < more.length; i++) {
+    const item: HanimeInfo = more[i];
+    const code: string = item.videoCode;
+    if (code.length === 0 || seen.has(code)) {
+      continue;
+    }
+    seen.add(code);
+    merged.push(item);
+    if (merged.length >= AUTHOR_WORKS_MAX_ITEMS) {
       break;
     }
   }
-  return result;
+  return merged;
 }
 
 @Component
@@ -412,15 +442,26 @@ export struct VideoPage {
    * 恢复方向锁 + 系统栏 + fs=false，从而回到非全屏播放页，而不是直接退回首页。
    */
   @StorageLink('exitVideoFullscreen') @Watch('onExitFullscreenTick') exitVideoFullscreen: number = 0;
+  /**
+   * 跨页面「关闭作者作品二级面板」信号（与 Index 约定，机制同全屏 tick）：
+   * Index 的 NavDestination.onBackPressed 检测到 AppStorage['videoPanelOpen'] 为 true 时，
+   * 不 pop 页面，而是把本 tick 自增；本页 Watch 收到后关掉面板 —— 系统返回手势/返回键
+   * 只退出二级面板，不会一下退到首页。
+   */
+  @StorageLink('exitVideoPanel') @Watch('onExitVideoPanelTick') exitVideoPanel: number = 0;
   @State loading: boolean = true;
   @State errorMsg: string = '';
   @State cloudflare: boolean = false;
   @State refreshing: boolean = false;
+  /** 下拉手势阶段（简介 tab 的下拉刷新）：只给 PullRefreshHeader 换文案用，不参与数据逻辑 */
+  @State refreshStatus: RefreshStatus = RefreshStatus.Inactive;
   @State video: HanimeVideo = emptyHanimeVideo();
   @State fav: boolean = false;
   @State watchLater: boolean = false;
   @State favBusy: boolean = false;
   @State rateBusy: boolean = false;
+  /** 关注作者请求在途（防连点；乐观更新，失败回滚） */
+  @State subBusy: boolean = false;
   @State introExpanded: boolean = false;
   @State commentCount: number = 0;
   @State commentReloadToken: number = 0;
@@ -607,6 +648,8 @@ export struct VideoPage {
 
   aboutToDisappear(): void {
     this.disposed = true;
+    // 页面销毁时清掉「面板开着」的跨页标记：否则返回手势会被一个已经不存在的面板一直吃掉
+    AppStorage.setOrCreate<boolean>('videoPanelOpen', false);
     const pageCount: number = AppStorage.get<number>('videoPageCount') ?? 0;
     const remainingVideoPages: number = pageCount > 1 ? pageCount - 1 : 0;
     AppStorage.setOrCreate<number>('videoPageCount', remainingVideoPages);
@@ -884,6 +927,8 @@ export struct VideoPage {
     }
     this.dismissComposerFocus();
     this.authorWorksPanelOpen = true;
+    // 告诉 Index：详情页上有浮层打开了，系统返回先交给本页处理（见 Index.consumeBackWhenVideoPanel）
+    AppStorage.setOrCreate<boolean>('videoPanelOpen', true);
     // 懒加载：只有第一次打开（还没成功加载过、也没有在途请求）才请求，关闭再打开不重复请求
     if (this.authorWorksLoaded || this.authorWorksFetching) {
       return;
@@ -897,6 +942,14 @@ export struct VideoPage {
       return;
     }
     this.authorWorksPanelOpen = false;
+    AppStorage.setOrCreate<boolean>('videoPanelOpen', false);
+  }
+
+  /** Index 收到系统返回、判定「面板开着」时自增 tick，这里关掉面板（与全屏 tick 同一套写法） */
+  onExitVideoPanelTick(): void {
+    if (this.authorWorksPanelOpen) {
+      this.closeAuthorWorksPanel();
+    }
   }
 
   /**
@@ -923,7 +976,7 @@ export struct VideoPage {
     const noTags: string[] = [];
     const noBrands: string[] = [];
     try {
-      const request: SearchRequest = {
+      const first: SearchRequest = {
         page: 1,
         query: name,
         genre: '',
@@ -934,17 +987,51 @@ export struct VideoPage {
         tags: noTags,
         brands: noBrands
       };
-      const result: SearchPage = await api.search(request);
+      const firstPage: SearchPage = await api.search(first);
       if (this.disposed) {
         return;
       }
-      this.authorWorks = normalizeAuthorWorks(result.list, this.videoCode());
+      // 第一页先落地：面板立刻有内容，后续页在后台继续追加
+      let all: HanimeInfo[] = normalizeAuthorWorks(firstPage.list);
+      this.authorWorks = all;
       this.authorWorksLoaded = true;
-    } catch (e) {
-      if (this.disposed) {
-        return;
+      if (!this.disposed) {
+        this.authorWorksLoading = false;
       }
-      this.authorWorksFailed = true;
+      // 继续翻页：站点搜索每页约 20 条，作者作品常常跨多页。
+      // 旧实现只取第 1 页并截断 20 条，于是「当前作品及其之后的」全都看不到。
+      let page: number = 2;
+      while (page <= firstPage.maxPage && page <= AUTHOR_WORKS_MAX_PAGES &&
+        all.length < AUTHOR_WORKS_MAX_ITEMS && !this.disposed) {
+        const next: SearchRequest = {
+          page: page,
+          query: name,
+          genre: '',
+          sort: '',
+          broad: false,
+          date: '',
+          duration: '',
+          tags: noTags,
+          brands: noBrands
+        };
+        const nextPage: SearchPage = await api.search(next);
+        if (this.disposed) {
+          return;
+        }
+        const before: number = all.length;
+        all = appendAuthorWorks(all, nextPage.list);
+        this.authorWorks = all;
+        // 某页没带来新条目（重复 / 空页）→ 提前结束，避免对着空结果一直翻
+        if (all.length === before) {
+          break;
+        }
+        page = page + 1;
+      }
+    } catch (e) {
+      if (!this.disposed) {
+        // 已有部分数据就保留（至少第一页是完整的），只在一条都没有时显示失败态
+        this.authorWorksFailed = this.authorWorks.length === 0;
+      }
     } finally {
       this.authorWorksFetching = false;
       if (!this.disposed) {
@@ -1523,14 +1610,17 @@ export struct VideoPage {
     return height;
   }
 
-  /** 播放器容器宽度：横屏画幅通栏；竖屏按比例收窄并在页面里居中 */
+  /**
+   * 播放器容器宽度：**竖屏 / 窄画面也铺满内容宽度**。
+   *
+   * 旧行为是按画幅把容器收窄并居中（width = height × ratio），结果播放器左右两侧露出的是
+   * 页面底色（浅色主题下就是一块白），也就是用户反馈的「视频外面左右两侧的白色区域」。
+   * 现在容器始终通栏、由 InlinePlayer 内部 contain 出左右黑边（黑色底层由 InlinePlayer 自绘），
+   * 视觉上「视频 + 两侧黑边」是一整块黑色播放器区域。
+   * 超宽画面（比屏更宽）仍然 clamp 到内容宽度。
+   */
   playerWidth(): number {
-    const width: number = this.playerHeight() * this.effectiveRatio();
-    const maxWidth: number = this.contentWidth();
-    if (!(width > 0)) {
-      return maxWidth;
-    }
-    return width > maxWidth ? maxWidth : width;
+    return this.contentWidth();
   }
 
   /**
@@ -2327,6 +2417,52 @@ export struct VideoPage {
     }
   }
 
+  /**
+   * 关注 / 取消关注作者，对齐安卓 ArtistSection 的订阅按钮（VideoIntroductionScreen.kt:1247-1272）。
+   *
+   * 站点接口：POST `/subscribe`，表单 `subscribe-user-id` / `subscribe-artist-id` / `subscribe-status`
+   * （未订阅发空串、已订阅发 '1'），与上游 HanimeSubscriptionService 逐字段一致。
+   *
+   * 数据来源：Artist.userId / Artist.artistId 由视频页 `#video-subscribe-form` 的两个 hidden input 解析而来
+   * （HanimeParser.parseArtist）。安卓只有在拿到这个表单时才画订阅按钮 —— 这里同样：
+   * userId 或 artistId 为空（未登录 / 站点改版）就直接隐藏按钮，而不是画一个点了没反应的。
+   */
+  async toggleArtistSubscribe(): Promise<void> {
+    const artist: Artist | null = this.video.artist;
+    if (artist === null) {
+      return;
+    }
+    if (!this.loggedIn) {
+      Toast.show('请先登录');
+      Router.openLogin();
+      return;
+    }
+    if (this.subBusy) {
+      return;
+    }
+    if (!this.ensureCsrfReady()) {
+      return;
+    }
+    const target: boolean = !artist.isSubscribed;
+    const prevVideo: HanimeVideo = this.video;
+    this.subBusy = true;
+    // 乐观更新：先切按钮文案，失败在 catch 里回滚
+    this.video = applyArtistSubscribed(prevVideo, target);
+    try {
+      await api.subscribeArtist(artist.userId, artist.artistId, target, prevVideo.csrfToken);
+      if (!this.disposed) {
+        Toast.show(target ? '已关注作者' : '已取消关注');
+      }
+    } catch (e) {
+      if (!this.disposed) {
+        this.video = prevVideo;
+        this.showActionError(e as Error);
+      }
+    } finally {
+      this.subBusy = false;
+    }
+  }
+
   /** 赞 / 踩：登录态写站点 POST /like（rateVideo），乐观更新 + 失败回滚 */
   async rateVideo(positive: boolean): Promise<void> {
     if (!this.loggedIn) {
@@ -2605,25 +2741,28 @@ export struct VideoPage {
   @Builder
   headerBlock() {
     Column() {
-      Text(this.video.title)
-        .fontSize(16)
+      // 标题主次对齐安卓原版 TitleSection（VideoIntroductionScreen.kt:1276）：
+      // 中文名（chineseTitle）存在时作为主标题，原日文/英文名降为副标题；
+      // 只在两者不同时才画副标题，避免同一串文字重复两行。
+      Text(this.primaryTitle())
+        .fontSize(20)
         .fontWeight(FontWeight.Bold)
         .fontColor(Theme.colors().textPrimary)
-        .maxLines(2)
+        .maxLines(3)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .width('100%');
 
-      if (this.video.chineseTitle.length > 0) {
-        Text(this.video.chineseTitle)
-          .fontSize(Dimens.captionSize)
+      if (this.secondaryTitle().length > 0) {
+        Text(this.secondaryTitle())
+          .fontSize(Dimens.bodySize)
+          .fontWeight(FontWeight.Medium)
           .fontColor(Theme.colors().textSecondary)
-          .maxLines(1)
+          .maxLines(2)
           .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .margin({ top: 4 })
+          .margin({ top: 6 })
           .width('100%');
       }
 
-      this.actionRow();
       this.metaRow();
     }
     .width('100%')
@@ -2631,160 +2770,150 @@ export struct VideoPage {
     .padding({ left: Dimens.pagePadding, right: Dimens.pagePadding, top: 10 });
   }
 
+  /** 主标题：中文名优先（安卓 TitleSection 的 primaryTitle 规则） */
+  primaryTitle(): string {
+    const chinese: string = this.video.chineseTitle;
+    if (chinese.length > 0) {
+      return chinese;
+    }
+    return this.video.title;
+  }
+
+  /** 副标题：与主标题不同才有值（安卓 secondaryTitle = title.takeIf { it != primaryTitle }） */
+  secondaryTitle(): string {
+    const primary: string = this.primaryTitle();
+    if (this.video.title !== primary) {
+      return this.video.title;
+    }
+    return '';
+  }
+
   /**
-   * 动作区：收藏 / 赞 / 踩 / 稍后再看 / 分享（44 圆按钮）。
-   * 播放/暂停不再放主按钮 —— 交给播放器手势（双击）与控制层中央 56 圆按钮。
+   * 动作区，对齐安卓 ActionSection（VideoIntroductionScreen.kt:1485）：
+   * 横向可滚动的「图标在上 + 文字在下」按钮（min 76 宽、圆角 14、图标 primary 色）。
+   *
+   * 与安卓的差异（本移植版没有的能力，不伪造入口）：
+   *  - 安卓有「签到」「加入我的清单」「下载」；本工程没有签到与 App 内下载，
+   *    「我的清单」入口在资料库页，因此这三项不出现在这里；
+   *  - 安卓分享「长按 = 复制分享文本」，这里同样支持。
    */
   @Builder
   actionRow() {
-    Row() {
-      // 收藏
-      Row() {
-        Image($r('app.media.ic_star'))
-          .width(20)
-          .height(20)
-          .fillColor(this.fav ? Theme.colors().onPrimary : Theme.colors().textPrimary);
+    Scroll() {
+      Row({ space: 8 }) {
+        VideoActionButton({
+          icon: '☆',
+          label: this.fav ? '已收藏' : '收藏',
+          active: this.fav,
+          onTap: () => {
+            this.toggleFavorite();
+          }
+        });
+        VideoActionButton({
+          icon: '👍',
+          label: '点赞',
+          active: this.video.isFav,
+          onTap: () => {
+            this.rateVideo(true);
+          }
+        });
+        VideoActionButton({
+          icon: '👎',
+          label: '点踩',
+          active: this.video.isUnlike,
+          onTap: () => {
+            this.rateVideo(false);
+          }
+        });
+        VideoActionButton({
+          icon: '🕘',
+          label: this.watchLater ? '已稍后' : '稍后再看',
+          active: this.watchLater,
+          onTap: () => {
+            this.toggleWatchLater();
+          }
+        });
+        VideoActionButton({
+          icon: '📤',
+          label: '分享',
+          active: false,
+          onTap: () => {
+            this.openShareMenu();
+          },
+          onLongTap: () => {
+            // 安卓 VideoActionButton 的 onLongClick 就是「复制分享文本」
+            this.copyShareText();
+          }
+        });
+        VideoActionButton({
+          icon: '🌐',
+          label: '原站打开',
+          active: false,
+          onTap: () => {
+            this.openSitePage();
+          }
+        });
+        if (this.video.originalComic.length > 0) {
+          VideoActionButton({
+            icon: '📖',
+            label: '原作漫画',
+            active: false,
+            onTap: () => {
+              Router.openWeb(this.video.originalComic, '原作漫画');
+            }
+          });
+        }
       }
-      .width(44)
-      .height(44)
-      .borderRadius(22)
-      .justifyContent(FlexAlign.Center)
-      .backgroundColor(this.fav ? Theme.colors().secondary : Theme.colors().chipTint)
-      .border({
-        width: Glass.borderWidth(),
-        color: this.fav ? Theme.colors().secondary : Theme.colors().glassBorder
-      })
-      .scale({ x: this.favScale, y: this.favScale })
-      .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.92 })
-      .enabled(!this.favBusy)
-      .onClick(() => {
-        this.toggleFavorite();
-      });
+      .padding({ left: Dimens.pagePadding, right: Dimens.pagePadding })
+      .margin({ top: 12 })
+      .alignItems(VerticalAlign.Top);
+    }
+    .scrollable(ScrollDirection.Horizontal)
+    .scrollBar(BarState.Off)
+    .width('100%')
+    .align(Alignment.Start);
+  }
 
-      // 赞
-      Row() {
-        Text('👍')
-          .fontSize(17);
+  /**
+   * 元信息区，对齐安卓 MetaSection（VideoIntroductionScreen.kt:1311）：
+   * 第一段是评分（赞/踩比例条，对应 VideoRatingButtons），第二段是「观看数 · 上传时间」。
+   * 作者不再挤在这里 —— 安卓有独立 ArtistSection，本页也改成独立作者卡（见 artistCard）。
+   */
+  @Builder
+  metaRow() {
+    Column() {
+      if (this.video.favTimes >= 0 || this.video.unlikesCount >= 0) {
+        RatingBar({
+          ratio: likeRatio(this.video),
+          likes: this.video.favTimes,
+          unlikes: this.video.unlikesCount
+        });
       }
-      .width(44)
-      .height(44)
-      .borderRadius(22)
-      .justifyContent(FlexAlign.Center)
-      .backgroundColor(this.video.isFav ? Theme.colors().secondary : Theme.colors().chipTint)
-      .border({
-        width: Glass.borderWidth(),
-        color: this.video.isFav ? Theme.colors().secondary : Theme.colors().glassBorder
-      })
-      .scale({ x: this.likeScale, y: this.likeScale })
-      .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.92 })
-      .enabled(!this.rateBusy)
-      .onClick(() => {
-        this.rateVideo(true);
-      });
-
-      // 踩
       Row() {
-        Text('👎')
-          .fontSize(17);
+        if (this.video.views.length > 0) {
+          Text('▶ ' + this.video.views)
+            .fontSize(Dimens.captionSize)
+            .fontColor(Theme.colors().textSecondary);
+        }
+        if (this.video.uploadTime.length > 0) {
+          Text((this.video.views.length > 0 ? '   ' : '') + '🕘 ' + this.video.uploadTime)
+            .fontSize(Dimens.captionSize)
+            .fontColor(Theme.colors().textSecondary)
+            .margin({ left: this.video.views.length > 0 ? 12 : 0 });
+        }
       }
-      .width(44)
-      .height(44)
-      .borderRadius(22)
-      .justifyContent(FlexAlign.Center)
-      .backgroundColor(this.video.isUnlike ? Theme.colors().secondary : Theme.colors().chipTint)
-      .border({
-        width: Glass.borderWidth(),
-        color: this.video.isUnlike ? Theme.colors().secondary : Theme.colors().glassBorder
-      })
-      .scale({ x: this.dislikeScale, y: this.dislikeScale })
-      .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.92 })
-      .enabled(!this.rateBusy)
-      .onClick(() => {
-        this.rateVideo(false);
-      });
-
-      // 稍后再看
-      Row() {
-        Image($r('app.media.ic_clock'))
-          .width(20)
-          .height(20)
-          .fillColor(this.watchLater ? Theme.colors().onPrimary : Theme.colors().textPrimary);
-      }
-      .width(44)
-      .height(44)
-      .borderRadius(22)
-      .justifyContent(FlexAlign.Center)
-      .backgroundColor(this.watchLater ? Theme.colors().primary : Theme.colors().chipTint)
-      .border({
-        width: Glass.borderWidth(),
-        color: this.watchLater ? Theme.colors().primary : Theme.colors().glassBorder
-      })
-      .scale({ x: this.laterScale, y: this.laterScale })
-      .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.92 })
-      .enabled(!this.laterBusy)
-      .onClick(() => {
-        this.toggleWatchLater();
-      });
-
-      // 分享（ActionSheet：复制分享文本 / 复制视频链接）
-      Row() {
-        Image($r('app.media.ic_share'))
-          .width(20)
-          .height(20)
-          .fillColor(Theme.colors().textPrimary);
-      }
-      .width(44)
-      .height(44)
-      .borderRadius(22)
-      .justifyContent(FlexAlign.Center)
-      .backgroundColor(Theme.colors().chipTint)
-      .border({ width: Glass.borderWidth(), color: Theme.colors().glassBorder })
-      .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.92 })
-      .onClick(() => {
-        this.openShareMenu();
-      });
+      .width('100%')
+      .alignItems(VerticalAlign.Center)
+      .margin({ top: this.hasRating() ? 10 : 0 });
     }
     .width('100%')
-    .justifyContent(FlexAlign.SpaceBetween)
-    .alignItems(VerticalAlign.Center)
-    // headerBlock 已有 12 页面边距，这里再补 4 → 首/末按钮距屏幕左右各 16，贴边问题修复
-    .padding({ left: 4, right: 4 })
+    .alignItems(HorizontalAlign.Start)
     .margin({ top: 10 });
   }
 
-  /** 元信息行：观看数 / 上传时间 / 作者（分享已移入动作区 44 圆按钮） */
-  @Builder
-  metaRow() {
-    Row() {
-      if (this.video.views.length > 0) {
-        Text(this.video.views)
-          .fontSize(Dimens.captionSize)
-          .fontColor(Theme.colors().textSecondary);
-      }
-      if (this.video.uploadTime.length > 0) {
-        Text((this.video.views.length > 0 ? ' · ' : '') + '上传于 ' + this.video.uploadTime)
-          .fontSize(Dimens.captionSize)
-          .fontColor(Theme.colors().textSecondary);
-      }
-      if (this.authorName().length > 0) {
-        Text((this.video.views.length > 0 || this.video.uploadTime.length > 0 ? ' · @' : '@') +
-          this.authorName())
-          .fontSize(Dimens.captionSize)
-          .fontColor(Theme.colors().textSecondary)
-          .fontWeight(FontWeight.Medium)
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .layoutWeight(1)
-          .onClick(() => {
-            Toast.show('作者主页暂未支持，可在「网页」中查看');
-          });
-      } else {
-        Blank();
-      }
-    }
-    .width('100%')
-    .alignItems(VerticalAlign.Center)
-    .margin({ top: 10 });
+  /** 是否有评分数据（赞/踩都取不到时安卓也不画 VideoRatingButtons） */
+  hasRating(): boolean {
+    return this.video.favTimes >= 0 || this.video.unlikesCount >= 0;
   }
 
   // ---------------------------------------------------------------------------
@@ -2864,32 +2993,204 @@ export struct VideoPage {
 
   @Builder
   introTab() {
-    Refresh({ refreshing: $$this.refreshing }) {
-      Scroll() {
-        Column() {
-          this.headerBlock();
-          this.introCard();
-          // 「作者作品」不再内联在这里：入口是简介卡作者行右侧的「作品 ▼」胶囊（打开二级面板），
-          // 简介 tab 保持 简介卡 → 标签 chips → 系列播放列表 的原顺序。
-          this.tagsBlock();
-          this.playlistBlock();
-          this.introFooter();
+    // 包一层 Stack 只为承载下拉刷新浮层：浮层用 position 绝对定位，不参与布局，
+    // 所以 Scroll 的高度/起点与改动前完全一致（详情页内容区顶部没有悬浮顶栏，topInset = 0）。
+    Stack({ alignContent: Alignment.TopStart }) {
+      Refresh({ refreshing: $$this.refreshing, builder: EmptyRefreshHeader }) {
+        Scroll() {
+          Column() {
+            // 段落顺序对齐安卓 VideoIntroductionScreen 的 LazyColumn（:393-471）：
+            // 作者卡 → 标题 → 元信息 → 简介 → 动作区 → 标签 → 系列播放列表。
+            // 相关推荐在本工程是独立 Tab（安卓是简介内的一段），这里不重复渲染。
+            this.artistCard();
+            this.headerBlock();
+            this.introCard();
+            this.actionRow();
+            // 「作者作品」不再内联在这里：入口是作者卡右侧的「作品 ▼」胶囊（打开二级面板）。
+            this.tagsBlock();
+            this.playlistBlock();
+            this.introFooter();
+          }
+          .width('100%')
+          // 详情页是 NavDestination 二级页，Index 的悬浮底栏会被覆盖，不需要再预留 bottomInset(96)，
+          // 只留 24 的内容呼吸 + 系统导航条高度，消除页面底部多余空白。
+          .padding({ bottom: 24 + this.navBarHeight });
         }
         .width('100%')
-        // 详情页是 NavDestination 二级页，Index 的悬浮底栏会被覆盖，不需要再预留 bottomInset(96)，
-        // 只留 24 的内容呼吸 + 系统导航条高度，消除页面底部多余空白。
-        .padding({ bottom: 24 + this.navBarHeight });
+        .height('100%')
+        .scrollBar(BarState.Off)
+        .edgeEffect(EdgeEffect.Spring);
       }
+      .onRefreshing(() => {
+        this.refresh();
+      })
+      // 跟手 1:1 + 触发距离 110，与首页/列表页同一套手感（KHenTai GalleryListView.ets:886-889）
+      .pullDownRatio(1)
+      .refreshOffset(110)
+      .onStateChange((state: RefreshStatus) => {
+        this.refreshStatus = state;
+      })
       .width('100%')
-      .height('100%')
-      .scrollBar(BarState.Off)
-      .edgeEffect(EdgeEffect.Spring);
+      .height('100%');
+
+      PullRefreshHeader({
+        status: this.refreshStatus,
+        refreshing: this.refreshing,
+        topInset: 0
+      });
     }
-    .onRefreshing(() => {
-      this.refresh();
-    })
     .width('100%')
     .height('100%');
+  }
+
+  /**
+   * 独立作者卡，对齐安卓 ArtistSection（VideoIntroductionScreen.kt:1208）：
+   * 52 圆头像 + 名字（粗体）+ 分类（次要色）+ 右侧按钮，整卡可点（进入作者作品）。
+   *
+   * 与安卓的两处已知差异（没有对应能力，不伪造）：
+   *  - 安卓右侧是「订阅 / 已订阅」按钮，走站点 POST 订阅；本移植版 HanimeApi 没有订阅接口，
+   *    因此改为「作品」入口（复用既有的作者作品面板）；
+   *  - 安卓有 artist.genre 之外的字段（帖子数等）不展示，这里只显示 genre。
+   */
+  @Builder
+  artistCard() {
+    if (this.authorName().length > 0) {
+      // 外层只负责左右留白：卡片本体 width 100% 同时带水平 margin 时，margin 不会被从 100% 里扣掉，
+      // 实际会溢出到贴边（这就是作者卡看起来没有左右边距的原因）；改用外层 padding 造内缩。
+      Column() {
+        Column() {
+        // 上半行：头像 + 名字/分类 + 关注按钮。
+        // 关注按钮是这一行**唯一**的可点目标（32 高、最小宽 76），不与别的入口挤在一起。
+        Row() {
+          if (this.artistAvatar().length > 0) {
+            Image(this.artistAvatar())
+              .width(52)
+              .height(52)
+              .borderRadius(26)
+              .objectFit(ImageFit.Cover)
+              .backgroundColor(Theme.colors().surfaceVariant)
+              .border({ width: 1, color: Theme.colors().glassBorder });
+          } else {
+            Row() {
+              Text(this.authorName().substring(0, 1))
+                .fontSize(20)
+                .fontWeight(FontWeight.Medium)
+                .fontColor(Theme.colors().primary);
+            }
+            .width(52)
+            .height(52)
+            .borderRadius(26)
+            .justifyContent(FlexAlign.Center)
+            .backgroundColor(Theme.colors().primaryContainer)
+            .border({ width: 1, color: Theme.colors().glassBorder });
+          }
+
+          Column() {
+            Text(this.authorName())
+              .fontSize(Dimens.subtitleSize)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(Theme.colors().textPrimary)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .width('100%');
+            Text(this.artistGenre().length > 0 ? this.artistGenre() : '作者')
+              .fontSize(Dimens.captionSize)
+              .fontColor(Theme.colors().textSecondary)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .margin({ top: 2 })
+              .width('100%');
+          }
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
+          .margin({ left: 12 });
+
+          // 关注 / 已关注：对齐安卓 ArtistSection 的订阅按钮。
+          // 尺寸从 26 高的小胶囊改成 32 高、最小宽 76 —— 原来两个 26 高的小按钮上下相隔 6vp，
+          // 手指很容易点错，这是本次「容易误触」的直接原因。
+          if (this.canSubscribeArtist()) {
+            Text(this.video.artist !== null && this.video.artist.isSubscribed ? '已关注' : '+ 关注')
+              .fontSize(Dimens.bodySize)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.video.artist !== null && this.video.artist.isSubscribed
+                ? Theme.colors().textSecondary : Theme.colors().onPrimary)
+              .maxLines(1)
+              .constraintSize({ minWidth: 76 })
+              .height(32)
+              .padding({ left: 14, right: 14 })
+              .borderRadius(999)
+              .backgroundColor(this.video.artist !== null && this.video.artist.isSubscribed
+                ? Theme.colors().chipTint : Theme.colors().primary)
+              .border({ width: Glass.borderWidth(), color: Theme.colors().glassBorder })
+              .textAlign(TextAlign.Center)
+              .margin({ left: 12 })
+              .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.94 })
+              .onClick(() => {
+                this.toggleArtistSubscribe();
+              });
+          }
+        }
+        .width('100%')
+        .alignItems(VerticalAlign.Center)
+        .padding({ left: 12, right: 12, top: 12, bottom: 12 });
+
+        // 下半行：「全部作品」独占通栏一行（40 高），与关注按钮之间隔着一条分隔线，
+        // 点击热区完全分开，不会再互相误触。整卡不再有点击 → 点头像/名字什么都不会发生。
+        Row() {
+          Text('全部作品')
+            .fontSize(Dimens.captionSize)
+            .fontWeight(FontWeight.Medium)
+            .fontColor(Theme.colors().textSecondary);
+          Blank();
+          Text('查看')
+            .fontSize(Dimens.captionSize)
+            .fontColor(Theme.colors().primary);
+          Text('›')
+            .fontSize(Dimens.captionSize)
+            .fontColor(Theme.colors().primary)
+            .margin({ left: 2 });
+        }
+        .width('100%')
+        .height(40)
+        .padding({ left: 12, right: 12 })
+        .alignItems(VerticalAlign.Center)
+        .border({ width: { top: Glass.borderWidth() }, color: Theme.colors().glassBorder })
+        .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.98 })
+        .onClick(() => {
+          this.openAuthorWorksPanel();
+        });
+      }
+      .width('100%')
+      .borderRadius(Dimens.listRadius)
+      .backgroundColor(Theme.colors().cardBg)
+      .border({ width: Glass.borderWidth(), color: Theme.colors().glassBorder })
+      .clip(true)
+      }
+      .width('100%')
+      .padding({ left: Dimens.pagePadding, right: Dimens.pagePadding, top: 12 });
+    }
+  }
+
+  /** 作者分类（安卓 ArtistSection 的第二行 genre） */
+  artistGenre(): string {
+    const artist: Artist | null = this.video.artist;
+    if (artist !== null) {
+      return artist.genre;
+    }
+    return '';
+  }
+
+  /**
+   * 是否显示「关注」按钮：必须有作者，且 `#video-subscribe-form` 的 userId / artistId 都解析到了。
+   * 与安卓一致（Parser.kt:600-612 只有拿到这两个 hidden input 才构造 Artist.post）。
+   * 未登录时站点不下发这个表单，因此未登录看不到按钮 —— 这也避免了一个必然 401 的按钮。
+   */
+  canSubscribeArtist(): boolean {
+    const artist: Artist | null = this.video.artist;
+    if (artist === null) {
+      return false;
+    }
+    return artist.userId.length > 0 && artist.artistId.length > 0;
   }
 
   /** 可展开简介卡：panelRadius 30 + cardBg 纯色 + 1vp glassBorder */
@@ -2922,92 +3223,6 @@ export struct VideoPage {
             .width('100%');
         }
 
-        if (this.authorName().length > 0) {
-          this.cardDivider();
-          Row() {
-            if (this.artistAvatar().length > 0) {
-              Image(this.artistAvatar())
-                .width(34)
-                .height(34)
-                .borderRadius(17)
-                .objectFit(ImageFit.Cover)
-                .backgroundColor(Theme.colors().surfaceVariant)
-                .border({ width: 1, color: Theme.colors().glassBorder });
-            } else {
-              Row() {
-                Text(this.authorName().substring(0, 1))
-                  .fontSize(14)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(Theme.colors().primary);
-              }
-              .width(34)
-              .height(34)
-              .borderRadius(17)
-              .justifyContent(FlexAlign.Center)
-              .backgroundColor(Theme.colors().primaryContainer)
-              .border({ width: 1, color: Theme.colors().glassBorder });
-            }
-            Column() {
-              Text('作者')
-                .fontSize(Dimens.captionSize)
-                .fontColor(Theme.colors().textHint);
-              // 作者名 + 右侧「作品 ▼」胶囊同一行：作者名 layoutWeight 撑开，胶囊贴右且垂直居中
-              Row() {
-                Text(this.authorName())
-                  .fontSize(Dimens.captionSize)
-                  .fontWeight(FontWeight.Medium)
-                  .fontColor(Theme.colors().textSecondary)
-                  .maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                  .layoutWeight(1);
-                Row() {
-                  Text('作品')
-                    .fontSize(Dimens.captionSize)
-                    .fontColor(Theme.colors().primary)
-                    .maxLines(1);
-                  Text('▼')
-                    .fontSize(9)
-                    .fontColor(Theme.colors().primary)
-                    .margin({ left: 3 });
-                }
-                .height(AUTHOR_WORKS_BUTTON_HEIGHT)
-                .padding({ left: 10, right: 10 })
-                .margin({ left: 8 })
-                .borderRadius(999)
-                .backgroundColor(Theme.colors().chipTint)
-                .border({ width: Glass.borderWidth(), color: Theme.colors().glassBorder })
-                .justifyContent(FlexAlign.Center)
-                .alignItems(VerticalAlign.Center)
-                .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.94 })
-                .onClick(() => {
-                  this.openAuthorWorksPanel();
-                });
-              }
-              .width('100%')
-              .alignItems(VerticalAlign.Center)
-              .margin({ top: 2 });
-            }
-            .layoutWeight(1)
-            .alignItems(HorizontalAlign.Start)
-            .margin({ left: 10 });
-          }
-          .width('100%')
-          .alignItems(VerticalAlign.Center)
-          .onClick(() => {
-            // 整行点击同样打开作者作品二级面板（入口在右侧胶囊；两处调用同一幂等方法，不会重复加载）
-            this.openAuthorWorksPanel();
-          });
-        }
-
-        if (this.video.favTimes >= 0 || this.video.unlikesCount >= 0) {
-          this.cardDivider();
-          this.cardSectionLabel('评价');
-          RatingBar({
-            ratio: likeRatio(this.video),
-            likes: this.video.favTimes,
-            unlikes: this.video.unlikesCount
-          });
-        }
       }
       .width('100%')
       .alignItems(HorizontalAlign.Start)
@@ -3155,18 +3370,31 @@ export struct VideoPage {
         .alignItems(VerticalAlign.Center);
       } else {
         Grid() {
-          // normalizeAuthorWorks 已排除当前视频并按 videoCode 去重，key 唯一且稳定
+          // normalizeAuthorWorks 按 videoCode 去重（保留当前作品），key 唯一且稳定
           ForEach(this.authorWorks, (item: HanimeInfo) => {
             GridItem() {
-              VideoCard({
-                item: item,
-                cardWidth: 0,
-                onTap: () => {
-                  // 与相关推荐 / 系列一致：先关面板，再暂停落盘并跳到另一个详情页
-                  this.closeAuthorWorksPanel();
-                  this.openOtherVideo(item.videoCode);
+              // 徽标放封面左上角：卡片底部左侧是播放量、右下是时长，左上角是空位
+              Stack({ alignContent: Alignment.TopStart }) {
+                VideoCard({
+                  item: item,
+                  cardWidth: 0,
+                  onTap: () => {
+                    // 点自己：只关面板（不重新加载同一个视频，避免播放器被打断）
+                    if (item.videoCode === this.videoCode()) {
+                      this.closeAuthorWorksPanel();
+                      return;
+                    }
+                    // 与相关推荐 / 系列一致：先关面板，再暂停落盘并跳到另一个详情页
+                    this.closeAuthorWorksPanel();
+                    this.openOtherVideo(item.videoCode);
+                  }
+                });
+                // 正在播放的那一条：左下角「正在播放」徽标 + 三根跳动的音量条
+                if (item.videoCode === this.videoCode()) {
+                  NowPlayingBadge();
                 }
-              });
+              }
+              .width('100%');
             }
           }, (item: HanimeInfo) => item.videoCode);
         }
@@ -3220,7 +3448,25 @@ export struct VideoPage {
   playlistBlock() {
     Column() {
       if (this.playlistVideos().length > 0) {
-        SectionHeader({ title: this.playlistTitle() });
+        // 对齐安卓 PlaylistSection 的 SectionHeader（VideoIntroductionScreen.kt:1640）：
+        // 主标题固定「系列视频」，清单名作为副标题（原来把清单名当标题，长短不一、层级也不对）。
+        Column() {
+          Text('系列视频')
+            .fontSize(Dimens.subtitleSize)
+            .fontWeight(FontWeight.Bold)
+            .fontColor(Theme.colors().textPrimary)
+            .width('100%');
+          Text(this.playlistTitle())
+            .fontSize(Dimens.captionSize)
+            .fontColor(Theme.colors().textSecondary)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .margin({ top: 2 })
+            .width('100%');
+        }
+        .width('100%')
+        .alignItems(HorizontalAlign.Start)
+        .padding({ left: Dimens.pagePadding, right: Dimens.pagePadding, bottom: 8 });
         List({ space: Dimens.gap }) {
           ForEach(this.playlistVideos(), (item: HanimeInfo) => {
             ListItem() {
@@ -3298,6 +3544,9 @@ export struct VideoPage {
         .columnsTemplate('1fr 1fr')
         .columnsGap(Dimens.gap)
         .rowsGap(Dimens.gap)
+        // 卡片高度不再统一（里番 3:4 / 三次元 16:9）：DEFAULT 时同一行按最高卡片统一行高，
+        // 短卡的背景不会跟着拉满，视觉上保持顶部对齐
+        .alignItems(GridItemAlignment.DEFAULT)
         .width('100%')
         .layoutWeight(1)
         // 覆盖全部条目（横屏面板再矮也覆盖可见行）：滚动经过任意位置都不需要「滚到附近才创建」
@@ -4045,5 +4294,118 @@ export struct VideoPage {
     .onVisibleAreaChange([0.0, 1.0], (isVisible: boolean, currentRatio: number) => {
       this.onPageVisibilityChanged(isVisible, currentRatio);
     });
+  }
+}
+
+/**
+ * 简介页动作按钮，对齐安卓 `VideoActionButton`（VideoIntroductionScreen.kt:1546）：
+ * 图标在上、文字在下、最小宽 76、圆角 14、选中态整块用 primary 底色。
+ *
+ * 为什么单独抽成 @Component 而不是 @Builder：需要「点击 + 长按」两种手势共用同一节点，
+ * 抽成组件后 onTap/onLongTap 作为普通成员传入，比把闭包塞进 @Builder 参数更稳（ArkTS 1.0 限制少）。
+ */
+@Component
+struct VideoActionButton {
+  @Prop label: string = '';
+  @Prop icon: string = '';
+  @Prop active: boolean = false;
+  onTap: () => void = () => {
+  };
+  onLongTap: () => void = () => {
+  };
+
+  build() {
+    Column() {
+      Text(this.icon)
+        .fontSize(20)
+        .fontColor(this.active ? Theme.colors().onPrimary : Theme.colors().primary);
+      Text(this.label)
+        .fontSize(11)
+        .maxLines(1)
+        .fontColor(this.active ? Theme.colors().onPrimary : Theme.colors().textPrimary)
+        .margin({ top: 6 });
+    }
+    .constraintSize({ minWidth: 76 })
+    .padding({ left: 10, right: 10, top: 8, bottom: 8 })
+    .borderRadius(14)
+    .backgroundColor(this.active ? Theme.colors().primary : Theme.colors().chipTint)
+    .border({ width: Glass.borderWidth(), color: Theme.colors().glassBorder })
+    .alignItems(HorizontalAlign.Center)
+    .justifyContent(FlexAlign.Center)
+    .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.94 })
+    .onClick(() => {
+      this.onTap();
+    })
+    .gesture(LongPressGesture({ repeat: false, duration: 500 })
+      .onAction(() => {
+        this.onLongTap();
+      }));
+  }
+}
+
+/**
+ * 「正在播放」徽标：作者作品面板里标出当前这条视频，并给三根跳动的音量条做播放动画。
+ *
+ * 为什么要自绘动画而不直接用 LoadingProgress：原版的「正在播放」是一个小音量条动效，
+ * 转圈会和「加载中」混淆。三根条用 260ms 定时器改高度 + 200ms 补间，
+ * 关掉面板（组件销毁）时清掉定时器，不会在后台空转。
+ */
+@Component
+struct NowPlayingBadge {
+  @State bar1: number = 8;
+  @State bar2: number = 14;
+  @State bar3: number = 10;
+  private timerId: number = -1;
+  /** 三根条的候选高度（vp）：交替取值形成跳动感，不做随机，保证可复现、不会剧烈闪烁 */
+  private static readonly LEVELS: number[] = [6, 10, 14, 16, 12, 8];
+
+  aboutToAppear(): void {
+    let tick: number = 0;
+    this.timerId = setInterval(() => {
+      tick = tick + 1;
+      const levels: number[] = NowPlayingBadge.LEVELS;
+      const n: number = levels.length;
+      animateTo({ duration: 200, curve: Curve.EaseInOut }, () => {
+        this.bar1 = levels[(tick) % n];
+        this.bar2 = levels[(tick * 2 + 1) % n];
+        this.bar3 = levels[(tick * 3 + 2) % n];
+      });
+    }, 260);
+  }
+
+  aboutToDisappear(): void {
+    if (this.timerId !== -1) {
+      clearInterval(this.timerId);
+      this.timerId = -1;
+    }
+  }
+
+  build() {
+    Row({ space: 3 }) {
+      Row()
+        .width(2.5)
+        .height(this.bar1)
+        .borderRadius(2)
+        .backgroundColor('#FFFFFF');
+      Row()
+        .width(2.5)
+        .height(this.bar2)
+        .borderRadius(2)
+        .backgroundColor('#FFFFFF');
+      Row()
+        .width(2.5)
+        .height(this.bar3)
+        .borderRadius(2)
+        .backgroundColor('#FFFFFF');
+      Text('正在播放')
+        .fontSize(10)
+        .fontColor('#FFFFFF')
+        .margin({ left: 3 });
+    }
+    .padding({ left: 6, right: 6, top: 3, bottom: 3 })
+    .margin({ left: 6, top: 6 })
+    .borderRadius(6)
+    .backgroundColor('rgba(0,0,0,0.62)')
+    .alignItems(VerticalAlign.Center);
   }
 }

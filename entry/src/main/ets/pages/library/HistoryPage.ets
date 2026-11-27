@@ -16,6 +16,7 @@ import { Glass } from '../../common/Glass';
 import { RouteParam, Router } from '../../common/Router';
 import { Toast } from '../../common/Toast';
 import { AppTopBar, EmptyView, ErrorView, LoadingView } from '../../components/common/Widgets';
+import { EmptyRefreshHeader, PullRefreshHeader } from '../../components/common/PullRefreshHeader';
 import {
   historyProgressPercent,
   historySubtitle,
@@ -36,6 +37,8 @@ export struct HistoryPage {
   @State records: HistoryRecord[] = [];
   @State loading: boolean = true;
   @State refreshing: boolean = false;
+  /** 下拉手势阶段：只给 PullRefreshHeader 换文案用（KHenTai GalleryListView.ets:197） */
+  @State refreshStatus: RefreshStatus = RefreshStatus.Inactive;
   @State hasLoaded: boolean = false;
   @State errorMessage: string = '';
 
@@ -259,7 +262,7 @@ export struct HistoryPage {
       .width('100%')
       .layoutWeight(1);
     } else {
-      Refresh({ refreshing: $$this.refreshing }) {
+      Refresh({ refreshing: $$this.refreshing, builder: EmptyRefreshHeader }) {
         // 卡片自身不再带水平 margin，左右 12 边距由 List 横向 padding 提供；
         // 首个 ListItem 是悬浮顶栏让位 spacer（随列表滚走）。
         List({ space: 8 }) {
@@ -287,8 +290,14 @@ export struct HistoryPage {
       }
       .width('100%')
       .layoutWeight(1)
+      // 跟手 1:1 + 触发距离 110，与其它列表页同一套手感（KHenTai GalleryListView.ets:886-889）
+      .pullDownRatio(1)
+      .refreshOffset(110)
       .onRefreshing(() => {
         this.load(true);
+      })
+      .onStateChange((state: RefreshStatus) => {
+        this.refreshStatus = state;
       });
     }
   }
@@ -301,6 +310,13 @@ export struct HistoryPage {
       }
       .width('100%')
       .height('100%');
+
+      // 下拉刷新浮层：钉在悬浮顶栏下沿（列表首项 spacer 即顶栏总高）
+      PullRefreshHeader({
+        status: this.refreshStatus,
+        refreshing: this.refreshing,
+        topInset: this.statusBarHeight + Dimens.topBarHeight
+      });
 
       AppTopBar({
         title: '观看历史',

@@ -15,21 +15,12 @@
  *    全屏改为「页内横屏全屏」：本组件只通过 onToggleFullscreen 回调请求父页面切换，
  *    窗口方向 / 系统栏由父页面（VideoPage）统一管理。
  *
- * 播放内核（两选一）：设置页 AppStorage['playerKernel'] 为 'mpv' 时走 mpv 内核（libmpv，
- * 逻辑见 logic/player/MpvKernel.ets），否则走系统 AVPlayer（取值 'exo'，对应上游 Android 的
- * ExoPlayer 角色，也即本文件的 AVPlayer 分支）。
+ * 播放内核：只有系统 AVPlayer（单一内核）。HarmonyOS 没有 ExoPlayer；之前接过的 libmpv
+ * （@mpv-ohos/mpv-arkts）在真机上无法起播，已整体移除，不再提供「可切换内核」。
  *
- *  - exo：media.createAVPlayer() + XComponent(controller) 拿 surfaceId，原有加载方式轮换 /
+ *  - 播放：media.createAVPlayer() + XComponent(controller) 拿 surfaceId；原有加载方式轮换 /
  *    12 秒加载超时 / 自动重试 / 网页降级策略完全不变；
- *  - mpv：MpvKernel 的 Player 本身就是 XComponentController（surfaceId/controller 模型，
- *    不是 libraryname 模型），所以 XComponent 写法与 exo 相同，只是 controller 换成内核的
- *    Player。内核必须在 aboutToAppear 里预建（见该函数），build 时才能拿到非空 controller。
- *    错误 / 超时复用同一套通道：错误走 handlePlayerError，降级链 mpv → exo → 网页。
- *
- * 内核设置在「打开播放器」时快照一次，切换设置后下一次进入详情页生效；mpv 降级 exo 时把
- * kernelBranch 置 'exo' 触发 XComponent 重建（新组件走 controller 版，AVPlayer 重新拿
- * surfaceId）。所有控制点（播放 / seek / 倍速 / 音量 / 循环 / 清晰度 / 折叠 / 后台 / 销毁）
- * 都按内核分派，控制层 / 手势 / 进度条 / 评论逻辑不变。
+ *  - 降级链只有两段：AVPlayer → 网页播放（不再有中间的内核切换）。
  *
  * 入参 video 由父页面（详情页）在 api.getVideo 成功后传入，本组件不再自己请求详情。
  * 播放区域尺寸由父容器决定（详情页结合 videoSizeChange 回调做比例自适应）；本组件内部再按
@@ -100,13 +91,11 @@ import { window } from '@kit.ArkUI';
 import { media } from '@kit.MediaKit';
 import { audio } from '@kit.AudioKit';
 import { BusinessError, pasteboard } from '@kit.BasicServicesKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 import { webview } from '@kit.ArkWeb';
 import { describeError } from '../../logic/net/Errors';
 import { CookieStore } from '../../logic/net/CookieStore';
 import { AppSettings } from '../../logic/settings/AppSettings';
 import { LocalRepo } from '../../logic/db/LocalRepo';
-import { MpvKernel, MpvKernelState, MpvPlaybackOptions } from '../../logic/player/MpvKernel';
 import { HanimeVideo, VideoSource, emptyHanimeVideo } from '../../core/model/Models';
 import { buildWatchUrl } from '../../core/util/Urls';
 import { formatMs } from '../../core/util/Format';
@@ -139,6 +128,8 @@ const ORIENTATION_GUARD_MS: number = 1000;
 const ORIENTATION_GUARD_RECHECK_MS: number = 400;
 /** 控制层自动隐藏延迟：5 秒无操作 */
 const CONTROLS_HIDE_MS: number = 5000;
+/** 锁定按钮的独立自动隐藏时长（ms）：比控制层的 5s 更短，避免长时间挂在画面上挡视线 */
+const LOCK_HIDE_MS: number = 3000;
 /** 单击 / 双击判定：两次抬起间隔小于该值视为双击（毫秒） */
 const DOUBLE_TAP_MS: number = 300;
 /** 长按判定为「临时 2 倍速」的按住时长（毫秒，对齐原版长按手势） */
@@ -160,6 +151,12 @@ const RESUME_END_GUARD_MS: number = 1500;
  * 否则在播放开始后的首个进度回调里补一次 seek，并在此期间拒绝用 0 / 旧位置落盘。
  */
 const RESUME_SEEK_TOLERANCE_MS: number = 2500;
+/**
+ * seekDone 看门狗（毫秒）：AVPlayer 偶发不回调 seekDone（seek 期间切换清晰度 / surface 重建 /
+ * 部分流上直接失败），此时 seeking 锁不解除会让进度条永久停在拖动位置、也不再落盘。
+ * 超时后主动解锁，交回 timeUpdate 驱动进度。
+ */
+const SEEK_DONE_TIMEOUT_MS: number = 1500;
 /**
  * 原生播放失败后的自动重试次数（建议 3 次）。
  *
@@ -213,6 +210,9 @@ const SPEED_CAPSULE_WIDTH: number = 56;
 const QUALITY_CAPSULE_WIDTH: number = 68;
 /** 全屏胶囊宽度（图标 + '全屏' / '退出全屏'，宽度固定避免切换时控制条抖动） */
 const FULLSCREEN_CAPSULE_WIDTH: number = 88;
+
+/** 底部控制条上方的自下而上渐变遮罩高度（vp）：竖屏时保证时间 / 进度文字压在画面上仍可读 */
+const BOTTOM_SCRIM_HEIGHT: number = 96;
 
 /** 一档倍速：ArkTS 不能把 enum 值直接写进对象字面量数组，用 class 承载 */
 class SpeedOption {
@@ -363,27 +363,11 @@ export struct InlinePlayer {
    */
   @Prop keepPlayingWhenHidden: boolean = false;
   @StorageLink('themeMode') themeMode: string = 'system';
-  /**
-   * 播放内核设置（'exo' = 系统 AVPlayer；'mpv' = MPV 内核）。
-   *
-   * 由设置页（另一 agent）写入 AppStorage；本组件只在 aboutToAppear 里快照一次
-   * （见 kernelBranch），页面存活期间切换设置不影响当前播放，和原版一致。
-   * 历史取值由 AppSettings 统一归一到 'mpv'，本组件只认 'exo' / 'mpv' 两个值。
-   */
-  @StorageProp('playerKernel') playerKernel: string = 'exo';
   /** 状态栏高度（EntryAbility 写入）：全屏时顶部渐变条额外避开状态栏 / 刘海 */
   @StorageProp('statusBarHeight') statusBarHeight: number = 0;
   /** 底部导航条高度（EntryAbility 写入）：全屏时底部渐变条避开手势导航区 */
   @StorageProp('navBarHeight') navBarHeight: number = 0;
   @State useWeb: boolean = false;
-  /**
-   * 当前内核分支（'exo' / 'mpv'）：驱动 XComponent 的分支选择。
-   *
-   * 两值就够用，但用字符串保存以便将来扩展第三个内核；aboutToAppear 里按
-   * AppStorage['playerKernel'] 快照。mpv 播放失败降级时置 'exo'，靠 @State 触发一次
-   * 重建（新 XComponent 走 controller 版，AVPlayer 重新拿 surfaceId）。
-   */
-  @State kernelBranch: string = 'exo';
   @State mediaError: string = '';
   @State qualityIndex: number = 0;
   @State speedIndex: number = DEFAULT_SPEED_INDEX;
@@ -423,6 +407,28 @@ export struct InlinePlayer {
   @State hintKind: string = '';
   /** 当前音量 0~1（系统媒体音量归一化值，由右侧竖滑手势调节） */
   @State volumeLevel: number = 1;
+  /**
+   * 是否已锁定播放器（画面右侧的锁按钮）。
+   *
+   * 锁定后：控制层淡出并置为 Hidden、全部手势（单击显隐 / 双击快进 / 横滑 seek / 竖滑亮度音量 /
+   * 长按倍速）直接 return，只有锁按钮本身可点 —— 手持 / 放进兜里时不会误触。
+   * 退出播放器（releasePlayer）与切换视频时重置为未锁定。
+   */
+  @State locked: boolean = false;
+  /**
+   * 锁定按钮当前是否显示。
+   *
+   * 它有自己的 3s 计时器（LOCK_HIDE_MS），比控制层的 5s 短：
+   *  - 未锁定：只在控制层可见时才有意义（lockButtonVisible 里再与 controlsShown 取与）；
+   *  - 已锁定：控制层是隐藏的，这一位就是唯一开关 —— 点画面任意处重新显示 3s，方便随时解锁。
+   */
+  @State lockShown: boolean = true;
+  /** 锁定按钮隐藏计时器 */
+  private lockHideTimerId: number = -1;
+  /** 锁定态轻点判定：按下坐标与时间（-1 表示没有按下的记录） */
+  private lockTapX: number = -1;
+  private lockTapY: number = -1;
+  private lockTapAt: number = 0;
   /**
    * 当前亮度 0~1（窗口亮度，由左侧竖滑手势调节）。
    * 不再是「黑色遮罩 alpha 模拟」，而是真正下发到窗口亮度。
@@ -507,22 +513,32 @@ export struct InlinePlayer {
   private surfaceId: string = '';
   /**
    * XComponent id：页面生命周期内**必须稳定**（重绘不能变）。
-   *
-   * AVPlayer 用它只是组件标识；mpv 的 XComponent 同样需要稳定 id（组件重建会重新绑定
-   * controller），所以两条分支共用同一个 id 生成规则。
+   * AVPlayer 的 surfaceId 绑定依赖它。
    */
   private xcomponentId: string = '';
   private pendingSeekMs: number = 0;
   private prepareRequested: boolean = false;
+  /**
+   * 是否正在「seek 进行中」（拖动条松手 / 双击快进 / 续播补 seek）。
+   * 为 true 时 handleTimeUpdate 不把播放器报回来的旧位置写进 positionMs，
+   * 否则进度条会先弹回旧位置、再跳到新位置（用户看到的「来回弹」）。
+   */
   private seeking: boolean = false;
+  /** 是否有一次 seek 正在等 AVPlayer 的 seekDone 回调（AVPlayer 的 seek 是异步的） */
+  private seekInFlight: boolean = false;
+  /**
+   * seek 排队中的**最后一个**目标（trailing 语义；-1 = 无）。
+   *
+   * 拖动 / 连点快进时会有多次 seek 请求，不能全部下发：AVPlayer 的 seek 队列会被打满，
+   * 最终落点变成某个中间值。这里只保留最新一个，等 seekDone 后补发。
+   */
+  private trailingSeekMs: number = -1;
+  /** 本次 seek 的目标位置（seekDone 前用它压住 UI 位置） */
+  private seekTargetMs: number = 0;
+  /** seek 看门狗定时器 id（-1 = 无）：seekDone 丢失时不至于让进度条永久卡住 */
+  private seekGuardTimer: number = -1;
   private lastSavedMs: number = 0;
   private disposed: boolean = false;
-  /** MPV 内核实例（仅 mpv 分支存在；降级 / 销毁时释放） */
-  private mpvKernel: MpvKernel | null = null;
-  /** MPV 播放失败已降级到 AVPlayer（每页只降级一次，防止 mpv ↔ exo 来回切换） */
-  private mpvFailed: boolean = false;
-  /** MPV 专用加载超时定时器 id（-1 = 无；AVPlayer 的 loadTimerId 读 avPlayer.state，不能复用） */
-  private mpvLoadTimerId: number = -1;
   /** 当前尝试播放的媒体地址（用于失败后的"带头重试"） */
   private sourceUrl: string = '';
   /** 是否已经尝试过带 Referer/UA/Cookie 的 MediaSource */
@@ -594,33 +610,12 @@ export struct InlinePlayer {
   aboutToAppear(): void {
     this.instanceSeq = inlinePlayerSeq;
     inlinePlayerSeq = inlinePlayerSeq + 1;
-    // 播放内核快照：设置页切换后「下一次打开播放器」生效（与 PuraPily 行为一致），
-    // 页面存活期间不再跟随 AppStorage 变化，避免正在播放时重建 XComponent。
-    this.kernelBranch = this.playerKernel === 'mpv' ? 'mpv' : 'exo';
-    this.mpvFailed = false;
-    // XComponent id 一旦确定不再变化：mpv 的 controller 绑定、AVPlayer 的 surfaceId 都依赖它
+    // XComponent id 一旦确定不再变化：AVPlayer 的 surfaceId 绑定依赖它
     this.xcomponentId = 'hanime_inline_player_' + this.video.videoCode + '_' + this.instanceSeq;
     this.surfaceController.onReady = (surfaceId: string) => {
       this.surfaceId = surfaceId;
       this.applySurface();
     };
-    // MPV 分支必须在这里就把内核建出来并 create 一次（context 传 null → 停在 waitingSurface）：
-    // MpvKernel.controller() 在 create 之前返回 null，而 build 时 XComponent 的 controller 不能为空，
-    // 等 onLoad / loadSource 再建就晚了。url 先给空串（真正地址与续播点在 preparePlayback 里异步确定，
-    // 届时走 reload 复用同一个 Player，controller 不变），headers 同理留空。
-    // resumeEndGuardMs 直接给保护阈值：此处历史进度还没读出来（异步），无法判断是否续播；
-    // 起播点落在结尾 1.5s 内一律回退到 0 —— 对续播是必需的，对「切清晰度保位置」只是极小概率从 0 重播。
-    if (this.kernelBranch === 'mpv') {
-      const kernel: MpvKernel | null = this.ensureMpvKernel();
-      if (kernel !== null) {
-        const ok: boolean = kernel.create(null, this.xcomponentId, '', new Map<string, string>(),
-          this.buildMpvOptions(0, RESUME_END_GUARD_MS));
-        if (!ok) {
-          // 预建失败（native 初始化异常）：此时还没开始加载，直接按 exo 继续（见 fallback 里的判断）
-          this.fallbackKernelToAv('mpv 预建失败');
-        }
-      }
-    }
     this.handle.pauseAndSave = () => {
       this.pauseAndSave();
     };
@@ -859,19 +854,6 @@ export struct InlinePlayer {
   /** 切后台时静默暂停（不弹 Toast，不改变手势 / 弹窗等 UI 状态） */
   private pauseFromBackground(): void {
     this.endSpeedBoost();
-    if (this.useKernel()) {
-      const kernel: MpvKernel | null = this.mpvKernel;
-      // seek 落地判定窗口内内核可能仍是 playing（mpv 的 seek 不暂停），isSeeking 一并检查，
-      // 保证「刚要 seek 就切后台」也能停下来，不会在后台继续出声。
-      if (kernel !== null && (kernel.isPlaying() || kernel.isSeeking())) {
-        try {
-          kernel.pause();
-        } catch (e) {
-          // 内核已释放 / 正在切换状态：静默忽略
-        }
-      }
-      return;
-    }
     const player: media.AVPlayer | null = this.avPlayer;
     if (player === null) {
       return;
@@ -1071,14 +1053,6 @@ export struct InlinePlayer {
 
   /** 设置 AVPlayer 自身增益（0~1）；只在系统媒体音量不可用时作为回退使用 */
   private applyPlayerGain(level: number): void {
-    // MPV 分支：回退音量直接交给内核 setVolume（mpv 侧是 0~130，内核内部已做 ×100 换算）
-    if (this.useKernel()) {
-      const kernel: MpvKernel | null = this.mpvKernel;
-      if (kernel !== null) {
-        kernel.setVolume(level);
-      }
-      return;
-    }
     const player: media.AVPlayer | null = this.avPlayer;
     if (player === null) {
       return;
@@ -1274,13 +1248,6 @@ export struct InlinePlayer {
     this.resumeHoldTargetMs = 0;
     this.seekTo(0);
     this.resetProgressInDb();
-    if (this.useKernel()) {
-      const kernel: MpvKernel | null = this.mpvKernel;
-      if (kernel !== null && (kernel.state === 'paused' || kernel.state === 'prepared')) {
-        kernel.play();
-      }
-      return;
-    }
     const player: media.AVPlayer | null = this.avPlayer;
     if (player === null) {
       return;
@@ -1346,7 +1313,7 @@ export struct InlinePlayer {
 
   /**
    * 排一次自动重试（失败入口，防抖后调用）：
-   *  - 已达上限 → 结束重试：mpv 内核先降级 exo，exo 则降级网页播放（错误面板显示最后一次失败原因）；
+   *  - 已达上限 → 结束重试，降级网页播放（错误面板显示最后一次失败原因）；
    *  - 未达上限 → 记录当前进度，按 800 / 1500 / 2500ms 递增间隔后重新 loadSource。
    * 重试期间 buffering = true（中央 Loading 可见）并显示「正在重试（n/3）」浮层；
    * 同时收掉「从头播放」胶囊，避免两个浮层叠在一起。
@@ -1358,13 +1325,8 @@ export struct InlinePlayer {
     this.clearLoadTimer();
     if (this.retryCount >= AUTO_RETRY_MAX) {
       this.clearAutoRetry();
-      // mpv 自动重试用尽：先降级系统播放器（exo 还有自己的一轮重试 + 网页降级），
-      // 而不是直接放弃原生播放。
-      if (this.useKernel()) {
-        this.fallbackKernelToAv(reason);
-      } else {
-        this.fallbackToWeb(reason);
-      }
+      // 原生播放重试用尽：降级网页播放
+      this.fallbackToWeb(reason);
       return;
     }
     this.hideResumeChip();
@@ -1411,7 +1373,7 @@ export struct InlinePlayer {
    * 顺序：
    *  1) 本次尝试的另一种加载方式还没试过 → 立即切换（保持原有 url → headers 兜底，不打乱播放策略）；
    *  2) 两种方式都失败 → 进入自动重试（最多 AUTO_RETRY_MAX 次，递增间隔）；
-   *  3) 自动重试次数用尽 → exo 降级网页播放；mpv 内核则先降级 exo（见 scheduleAutoRetry）。
+   *  3) 自动重试次数用尽 → 降级网页播放（见 scheduleAutoRetry）。
    * attemptFailureHandled 保证同一次失败只会被消费一次。
    */
   handlePlayerError(message: string): void {
@@ -1419,27 +1381,6 @@ export struct InlinePlayer {
       return;
     }
     this.clearLoadTimer();
-    // mpv 内核：错误统一入口。不走下面的 url ↔ headers 切换分支——内核每次都会带请求头，
-    // 没有第二种加载方式，切换只会白费一次尝试。
-    //   - 内核已进入 error：MpvKernel.reload 在 error 态会重建 Player，而 XComponent 的 controller
-    //     绑定一旦建立就无法更换（新 Player 收不到 surface 回调），原地重试必然黑屏 →
-    //     不再重试，直接降级 exo（exo 自己还有一轮重试 + 网页降级）；
-    //   - 其它情况（12 秒加载超时 / create 同步失败）：正常排队自动重试，reload 复用同一个
-    //     Player，controller 不变，是安全的。
-    if (this.useKernel()) {
-      this.clearMpvLoadTimer();
-      if (this.attemptFailureHandled) {
-        return;
-      }
-      this.attemptFailureHandled = true;
-      const kernel: MpvKernel | null = this.mpvKernel;
-      if (kernel !== null && kernel.state === 'error') {
-        this.fallbackKernelToAv(message);
-        return;
-      }
-      this.scheduleAutoRetry(message);
-      return;
-    }
     // 同一方式下的另一种加载路径还没试过：立即切换（不消耗自动重试次数）
     if (!this.headersTried && this.avPlayer !== null) {
       this.headersTried = true;
@@ -1563,7 +1504,7 @@ export struct InlinePlayer {
       this.handleDurationUpdate(duration);
     });
     player.on('seekDone', (time: number) => {
-      this.seeking = false;
+      this.handleSeekDone(time);
     });
     // 解码画幅监听（只新增回调，不改原有播放策略）：父页面据此做容器比例自适应，
     // 本组件同时记下画幅用于媒体层居中 letterbox（全屏 / 竖屏视频不拉伸）。
@@ -1600,6 +1541,10 @@ export struct InlinePlayer {
     // 新加载后旧的「补 seek 抑制窗口」不再适用
     this.resumeHoldUntil = 0;
     this.resumeHoldTargetMs = 0;
+    // 上一次源的在途 seek / trailing 目标不能带进新源（否则 seekDone 会把旧位置 seek 回来）
+    this.seekInFlight = false;
+    this.trailingSeekMs = -1;
+    this.clearSeekGuard();
     // 播放已结束时切换清晰度 / 重试：从头起播，避免续播到末尾立即 completed
     let effectiveSeek: number = seekMs;
     if (effectiveSeek <= 0 && !this.resumeSeekApplied && this.resumeTargetMs > 0) {
@@ -1619,12 +1564,6 @@ export struct InlinePlayer {
     this.prepareRequested = false;
     this.buffering = true;
     this.mediaError = '';
-    // 内核分派：mpv 用「同一 XComponent 上内核自己的 surface + 旧进度 seek」独立加载路径，
-    // 失败重试 / 降级都在 mpv 路径内部处理，不进入下面的 AVPlayer 逻辑。
-    if (this.useKernel()) {
-      this.loadSourceMpv(effectiveSeek);
-      return;
-    }
     try {
       await this.createPlayer();
       const player: media.AVPlayer | null = this.avPlayer;
@@ -1768,12 +1707,12 @@ export struct InlinePlayer {
         this.resumeFromHistory = false;
       }
       if (target > 0) {
-        try {
-          player.seek(target, media.SeekMode.SEEK_PREV_SYNC);
-          this.positionMs = target;
-        } catch (e) {
-          // seek 失败不影响起播：下面保留 pendingSeekMs，播放开始后由 confirmResumeSeek 补一次
-        }
+        // 起播续播同样走精确 seek：SEEK_PREV_SYNC 会退到关键帧，续播点会明显偏前；
+        // 这里统一用 SEEK_CLOSEST，并复用 issueSeek 的「在途 seek 排队」逻辑
+        this.positionMs = target;
+        this.seekTargetMs = target;
+        this.seeking = true;
+        this.issueSeek(target);
         if (fromHistory) {
           // 仅「从观看历史续播」时浮出「从头播放」胶囊 5s（切清晰度保位置不提示）。
           // 这里只记录目标、不清 pendingSeekMs：prepared 内的 seek 不保证落地，
@@ -1872,9 +1811,9 @@ export struct InlinePlayer {
   /**
    * 确认历史续播 seek 是否真正落地，必要时补一次。
    *
-   * 背景：AVPlayer 在 prepared 里「先 seek 再立刻 play」不保证 seek 生效；mpv 内核虽有
-   * 轮询实测位置判定，页面也需要独立校验一次（落盘只认页面里的 positionMs）。若播放器实际从 0
-   * 起播，而这里不校验，5s 节流 / 暂停 / 退出落盘就会把 0 写进历史（续播从此永久失效）。
+   * 背景：AVPlayer 在 prepared 里「先 seek 再立刻 play」不保证 seek 生效，页面必须独立校验一次
+   * （落盘只认页面里的 positionMs）。若播放器实际从 0 起播，而这里不校验，
+   * 5s 节流 / 暂停 / 退出落盘就会把 0 写进历史（续播从此永久失效）。
    *
    * @param currentMs 播放器当前上报的位置（毫秒）
    * @returns true = 本次做了一次补偿 seek（调用方应丢弃这次旧位置）；false = 已落地或无需处理
@@ -1907,383 +1846,48 @@ export struct InlinePlayer {
     return true;
   }
 
+  /**
+   * AVPlayer seek 落地回调。
+   *
+   *  - 有 trailing 目标（seek 期间又拖 / 又点快进）：只补发最后一个，中间值全部丢弃；
+   *  - 否则解锁 seeking，并用 seekDone 给的**真实落点**回写 positionMs —— 不能等下一次
+   *    timeUpdate：那之间播放器还会报一次旧位置，进度条就会「弹回原处」。
+   */
+  private handleSeekDone(time: number): void {
+    this.seekInFlight = false;
+    this.clearSeekGuard();
+    if (this.disposed) {
+      return;
+    }
+    if (this.pointerDown) {
+      // 手指还按在进度条上：这次 seekDone 属于上一次 seek，落点已经过时，
+      // 不能拿它回写（否则滑块会被拽回旧位置）；松手后的正式 seek 会重新下发。
+      this.trailingSeekMs = -1;
+      return;
+    }
+    if (this.trailingSeekMs >= 0) {
+      const next: number = this.trailingSeekMs;
+      this.trailingSeekMs = -1;
+      this.seekTargetMs = next;
+      this.positionMs = next;
+      this.issueSeek(next);
+      return;
+    }
+    this.seeking = false;
+    if (Number.isFinite(time) && time >= 0) {
+      this.positionMs = time;
+      this.seekTargetMs = time;
+      if (time - this.lastSavedMs >= SAVE_INTERVAL_MS || time < this.lastSavedMs) {
+        this.lastSavedMs = time;
+        this.saveProgress(time);
+      }
+    }
+  }
+
   handleDurationUpdate(duration: number): void {
     if (duration > 0) {
       this.durationMs = duration;
     }
-  }
-
-  // ---------------------------------------------------------------------------
-  // mpv 内核分支（播放内核设置 = 'mpv'）
-  //
-  // 与 exo（AVPlayer）分支的关系：
-  //  - 加载：loadSourceMpv → MpvKernel.create / reload；12 秒加载超时、加载期错误自动重试沿用
-  //    现有 scheduleAutoRetry（3 次递增间隔），用尽后 fallbackKernelToAv 降级 exo；
-  //  - 状态：内核 state 映射到本组件现有 @State（playerState / playing / buffering /
-  //    completed / durationMs / positionMs / videoWidth / videoHeight），控制层 / 手势 /
-  //    进度条 / 评论等上层逻辑零改动；
-  //  - 进度：内核 300ms 轮询 onPosition，复用 handleTimeUpdate / handleDurationUpdate 的
-  //    5 秒落盘节流；seeking 期间由内核保持 seek 目标，不会被旧位置覆盖；
-  //  - 降级：mpv 失败（内核 error / 重试用尽）→ 释放内核 + 切回 exo 的 XComponent 分支
-  //    （重新拿 surfaceId）+ 从当前进度重新 loadSource，并 Toast 一次、置 mpvFailed 防循环。
-  // ---------------------------------------------------------------------------
-
-  /** 是否走 mpv 内核（页面创建时快照；降级后为 false，网页播放时也为 false） */
-  useKernel(): boolean {
-    return this.kernelBranch === 'mpv' && !this.useWeb;
-  }
-
-  /**
-   * mpv XComponent onLoad：把 context 交给内核（surface 可能先于 / 后于 loadSource 就绪）。
-   *
-   * 与 exo 分支的 controller 模型一致，onLoad 的 event 是组件 context，内核用它做
-   * 「surface 已就绪」的先后顺序判定（waitingSurface → openSource 由 attachSurface 触发）。
-   */
-  onMpvXComponentLoad(event?: object): void {
-    if (this.disposed || !this.useKernel()) {
-      return;
-    }
-    if (event === undefined) {
-      return;
-    }
-    const kernel: MpvKernel | null = this.mpvKernel;
-    if (kernel === null) {
-      // 内核已随组件销毁释放（只有分支切换 / 页面销毁会走到）：组件若真的重建，
-      // 由触发重建的那条路径（retryNative / 降级）重新建内核并 reload，这里不主动复活内核。
-      return;
-    }
-    try {
-      kernel.attachSurface(event);
-    } catch (e) {
-      this.handlePlayerError('mpv surface 绑定失败：' + describeError(e as Error));
-    }
-  }
-
-  /** mpv XComponent onDestroy（页面销毁 / 切网页 / 降级重建）：先释放内核，避免 surface 销毁后仍被引用 */
-  onMpvSurfaceDestroy(): void {
-    this.clearMpvLoadTimer();
-    this.releaseMpvKernel();
-  }
-
-  /** 懒创建 mpv 内核并接好回调（一个播放器实例一个内核；预建 / 重建共用） */
-  private ensureMpvKernel(): MpvKernel | null {
-    if (this.mpvKernel !== null) {
-      return this.mpvKernel;
-    }
-    try {
-      const kernel: MpvKernel = new MpvKernel();
-      kernel.onStateChange = (state: MpvKernelState): void => {
-        this.handleMpvState(state);
-      };
-      kernel.onPosition = (positionMs: number, durationMs: number): void => {
-        this.handleMpvPosition(positionMs, durationMs);
-      };
-      kernel.onBufferingChange = (buffering: boolean): void => {
-        this.handleMpvBuffering(buffering);
-      };
-      kernel.onVideoSizeChange = (width: number, height: number): void => {
-        this.handleMpvVideoSize(width, height);
-      };
-      kernel.onError = (message: string): void => {
-        this.handlePlayerError(message);
-      };
-      this.mpvKernel = kernel;
-      return kernel;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  /** 释放 mpv 内核（幂等；降级 / 销毁时调用） */
-  private releaseMpvKernel(): void {
-    const kernel: MpvKernel | null = this.mpvKernel;
-    this.mpvKernel = null;
-    if (kernel === null) {
-      return;
-    }
-    try {
-      kernel.release();
-    } catch (e) {
-      // 释放失败不影响页面销毁
-    }
-  }
-
-  /**
-   * 起播参数快照（倍速 / 回退音量 / 循环 / 续播点 / 续播结尾保护）。
-   *
-   * 必须构造 MpvPlaybackOptions 本身：ArkTS 没有结构化类型，不能把别的内核的 options
-   * 对象直接传进来（字段名一样也会类型不符）。
-   *
-   * @param resumeEndGuardMs 续播「接近结尾回退 0」保护阈值；0 = 不做保护
-   */
-  private buildMpvOptions(seekMs: number, resumeEndGuardMs: number): MpvPlaybackOptions {
-    const options: MpvPlaybackOptions = {
-      hardDecode: true,
-      speed: SPEED_OPTIONS[this.speedIndex].value,
-      volume: this.usingPlayerGainFallback ? this.volumeLevel : 1,
-      looping: this.looping,
-      startPositionMs: seekMs,
-      autoplay: true,
-      resumeEndGuardMs: resumeEndGuardMs
-    };
-    return options;
-  }
-
-  /** 把 buildHeaders 的 Record 转成内核 Media(httpHeaders) 需要的 Map<string, string> */
-  private toMpvHeaders(headers: Record<string, string>): Map<string, string> {
-    const result: Map<string, string> = new Map<string, string>();
-    const keys: string[] = Object.keys(headers);
-    for (let i = 0; i < keys.length; i++) {
-      const key: string = keys[i];
-      // Record<string, string> 的下标访问是 ArkTS 允许的动态属性访问形式
-      const value: string = headers[key];
-      if (value.length > 0) {
-        result.set(key, value);
-      }
-    }
-    return result;
-  }
-
-  /** mpv 分支的加载入口（同步 open；真正起播由内核 prepared 回调驱动） */
-  private loadSourceMpv(seekMs: number): void {
-    if (this.disposed || this.mpvFailed) {
-      return;
-    }
-    const kernel: MpvKernel | null = this.ensureMpvKernel();
-    if (kernel === null) {
-      this.fallbackKernelToAv('mpv 内核初始化失败');
-      return;
-    }
-    // 每次加载都同步一次运行参数：内核在 prepared 时会重新下发倍速 / 音量 / 循环
-    const headers: Map<string, string> = this.toMpvHeaders(this.buildHeaders(this.sourceUrl));
-    kernel.setSpeed(SPEED_OPTIONS[this.speedIndex].value);
-    kernel.setVolume(this.usingPlayerGainFallback ? this.volumeLevel : 1);
-    kernel.setLooping(this.looping);
-    // 只走 reload、不再走 create：aboutToAppear 已经用空 url 预建过内核，此时 hasSource() 为 false，
-    // 但 create 会销毁并重建 Player，而 XComponent 绑定的 controller 无法更换（新 Player 收不到
-    // surface 回调）→ 必然黑屏。reload 复用同一个 Player（Player 还没建时它自己会建），只是换 source。
-    const ok: boolean = kernel.reload(this.sourceUrl, headers, seekMs);
-    if (!ok) {
-      this.handlePlayerError('mpv 视频源加载失败');
-      return;
-    }
-    this.scheduleMpvLoadTimeout();
-  }
-
-  /** mpv 加载超时（12 秒，对齐 exo）：没进 prepared/playing 就按失败走自动重试 */
-  private scheduleMpvLoadTimeout(): void {
-    this.clearMpvLoadTimer();
-    this.mpvLoadTimerId = setTimeout(() => {
-      this.mpvLoadTimerId = -1;
-      if (this.disposed || !this.useKernel()) {
-        return;
-      }
-      const state: string = this.playerState;
-      if (state === 'prepared' || state === 'playing' || state === 'paused' || state === 'completed') {
-        return;
-      }
-      this.handlePlayerError('mpv 媒体加载超时：CDN 可能在当前网络不可达');
-    }, LOAD_TIMEOUT_MS);
-  }
-
-  private clearMpvLoadTimer(): void {
-    if (this.mpvLoadTimerId !== -1) {
-      clearTimeout(this.mpvLoadTimerId);
-      this.mpvLoadTimerId = -1;
-    }
-  }
-
-  /**
-   * mpv 状态 → 现有 @State / AVPlayer 状态机字符串（保证上层控制层逻辑零改动）。
-   *
-   * 逐条对齐 MpvKernelState：idle / waitingSurface / preparing / prepared / playing /
-   * paused / completed / error；其中 waitingSurface / preparing 都映射成 initialized（加载中）。
-   */
-  private handleMpvState(state: MpvKernelState): void {
-    if (this.disposed || !this.useKernel()) {
-      return;
-    }
-    if (state === 'idle') {
-      this.playerState = 'idle';
-      return;
-    }
-    if (state === 'waitingSurface') {
-      // 等价 AVPlayer 的 initialized：加载中（中央缓冲浮层显示）
-      this.playerState = 'initialized';
-      return;
-    }
-    if (state === 'preparing') {
-      this.playerState = 'initialized';
-      this.buffering = true;
-      return;
-    }
-    if (state === 'prepared') {
-      this.playerState = 'prepared';
-      this.clearMpvLoadTimer();
-      this.buffering = false;
-      const kernel: MpvKernel | null = this.mpvKernel;
-      // 内核仍在 seek 落地判定窗口内时不要清掉 UI 的 seeking，
-      // 否则这次 seek 期间的位置回调会重新驱动进度；seek 收尾时会统一清掉。
-      if (kernel === null || !kernel.isSeeking()) {
-        this.seeking = false;
-      }
-      if (kernel !== null) {
-        if (kernel.durationMs > 0) {
-          this.durationMs = kernel.durationMs;
-        }
-        this.positionMs = kernel.positionMs;
-      }
-      let target: number = this.pendingSeekMs;
-      let fromHistory: boolean = this.resumeFromHistory && target > 0;
-      if (fromHistory && this.durationMs > 0 && target >= this.durationMs - RESUME_END_GUARD_MS) {
-        // 与 MpvKernel.applyPendingStart 的 resumeEndGuardMs 保持一致：
-        // 续播点接近结尾 → 本场从头播，否则内核按 0 起播、这里却还会再补 seek 到结尾
-        target = 0;
-        fromHistory = false;
-        this.resumeFromHistory = false;
-      }
-      if (fromHistory) {
-        // mpv 的起播 seek 由内核轮询实测位置收尾，没有「写进历史」的落地回调保证：
-        // 保留 pendingSeekMs / resumeTargetMs，由 playing 后的 confirmResumeSeek 校验 + 补偿。
-        this.resumeFromHistory = false;
-        this.resumeTargetMs = target;
-        this.resumeSeekApplied = false;
-        this.pendingSeekMs = target;
-        if (this.positionMs > 0) {
-          this.showResumeChip();
-        }
-      } else {
-        this.pendingSeekMs = 0;
-        // 续播点已被结尾保护回退 / 没有续播：作废待办，避免 isResumeSeekPending 一直为 true
-        this.resumeFromHistory = false;
-        this.resumeTargetMs = 0;
-        this.resumeSeekApplied = true;
-      }
-      this.updateKeepScreenOn();
-      return;
-    }
-    if (state === 'playing') {
-      this.playerState = 'playing';
-      this.playing = true;
-      this.buffering = false;
-      this.completed = false;
-      this.seeking = false;
-      this.hiddenByCover = false;
-      // 真正进入播放 = 本次加载（含自动重试）成功：清空重试计数与「正在重试」浮层
-      this.clearAutoRetry();
-      // 注意：这里不能直接 confirm（当前 positionMs 是 prepared 里预设的目标值，不是实测位置），
-      // 续播是否落地由首个真实进度回调里的 handleTimeUpdate → confirmResumeSeek 判定。
-      this.updateKeepScreenOn();
-      return;
-    }
-    if (state === 'paused') {
-      this.playerState = 'paused';
-      this.playing = false;
-      // 暂停即落盘（不依赖 5s 节流）
-      this.saveProgressNow();
-      this.updateKeepScreenOn();
-      return;
-    }
-    if (state === 'completed') {
-      this.playerState = 'completed';
-      this.playing = false;
-      this.buffering = false;
-      if (this.looping) {
-        // 循环由内核 native 维持，不展示「播完 / 重播」UI
-        this.saveProgressNow();
-        return;
-      }
-      this.completed = true;
-      this.hideResumeChip();
-      this.positionMs = this.durationMs > 0 ? this.durationMs : this.positionMs;
-      this.saveProgressNow();
-      this.updateKeepScreenOn();
-      return;
-    }
-    // error：这里只映射状态，重试 / 降级由 onError 回调（handlePlayerError）统一处理，避免重复消费
-    this.playerState = 'error';
-    this.playing = false;
-  }
-
-  /** mpv 进度回调：时长复用 handleDurationUpdate；位置变化才驱动 handleTimeUpdate（含 5s 落盘节流） */
-  private handleMpvPosition(positionMs: number, durationMs: number): void {
-    if (this.disposed || !this.useKernel()) {
-      return;
-    }
-    if (durationMs > 0) {
-      this.handleDurationUpdate(durationMs);
-    }
-    if (this.seeking) {
-      return;
-    }
-    if (positionMs === this.positionMs) {
-      return;
-    }
-    this.handleTimeUpdate(positionMs);
-  }
-
-  /**
-   * mpv 缓冲开始 / 结束（内核 300ms 轮询 player.state.buffering 上报）。
-   *
-   * 播放中缓冲时临时把 playerState 置回 initialized：现有「中央缓冲浮层」的显示条件是
-   * `buffering && playerState !== 'playing'`，而 mpv 的 buffering 是独立字段、不是状态机。
-   * 缓冲结束 / 播放状态事件会把它改回 playing，不影响其它 @State 与控制层逻辑。
-   */
-  private handleMpvBuffering(buffering: boolean): void {
-    if (this.disposed || !this.useKernel()) {
-      return;
-    }
-    this.buffering = buffering;
-    if (buffering) {
-      if (this.playing) {
-        this.playerState = 'initialized';
-      }
-    } else if (this.playing) {
-      this.playerState = 'playing';
-    }
-  }
-
-  /** 画幅：mpv 的 videoWidth / videoHeight 已经是可直接用于布局的显示尺寸，直接用 */
-  private handleMpvVideoSize(width: number, height: number): void {
-    if (this.disposed || !this.useKernel() || width <= 0 || height <= 0) {
-      return;
-    }
-    this.videoWidth = width;
-    this.videoHeight = height;
-    this.onVideoSizeChange(width, height);
-  }
-
-  /** mpv 失败 / 重试用尽：降级 exo（每页只降级一次；切回 controller 版 XComponent 重新拿 surfaceId） */
-  private fallbackKernelToAv(reason: string): void {
-    if (this.disposed || this.mpvFailed) {
-      return;
-    }
-    hilog.warn(0x0001, 'InlinePlayer', 'mpv 降级 exo: %{public}s', reason);
-    this.mpvFailed = true;
-    this.clearMpvLoadTimer();
-    this.clearAutoRetry();
-    this.endSpeedBoost();
-    this.hideResumeChip();
-    this.releaseMpvKernel();
-    this.playerState = 'idle';
-    this.playing = false;
-    this.buffering = true;
-    this.mediaError = '';
-    // 切回 exo 的 XComponent 分支（controller 版）：@State 变化触发重建，AVPlayer 重新拿 surfaceId
-    this.kernelBranch = 'exo';
-    Toast.show('mpv 播放失败，已切换系统播放器');
-    // preparePlayback 还没开始（预建内核时就初始化失败，watchUrl 仍为空）：不在这里重复加载，
-    // 让随后执行的 preparePlayback 按 exo 分支正常走（否则会和它抢同一个 AVPlayer）。
-    if (this.watchUrl.length === 0) {
-      return;
-    }
-    // 保留进度：优先当前位置，其次待应用 seek / 尚未落地的续播目标（内核 prepared 前失败时两者都在）
-    let seekMs: number = this.positionMs > 0 ? this.positionMs : this.pendingSeekMs;
-    if (seekMs <= 0 && !this.resumeSeekApplied) {
-      seekMs = this.resumeTargetMs;
-    }
-    // 重新走 exo 的加载 / 自动重试 / 网页降级链路
-    this.loadSource(this.qualityIndex, seekMs);
   }
 
   // ---------------------------------------------------------------------------
@@ -2304,11 +1908,6 @@ export struct InlinePlayer {
   }
 
   applySurface(): void {
-    // mpv 分支的 surface 由内核的 Player（本身是 XComponentController）自己接管，
-    // 不需要也不应该设置 AVPlayer.surfaceId
-    if (this.useKernel()) {
-      return;
-    }
     const player: media.AVPlayer | null = this.avPlayer;
     if (player === null || this.surfaceId.length === 0) {
       return;
@@ -2325,10 +1924,6 @@ export struct InlinePlayer {
   }
 
   togglePlay(): void {
-    if (this.useKernel()) {
-      this.toggleMpvPlay();
-      return;
-    }
     const player: media.AVPlayer | null = this.avPlayer;
     if (player === null) {
       return;
@@ -2354,7 +1949,8 @@ export struct InlinePlayer {
         this.resumeTargetMs = 0;
         this.resumeSeekApplied = true;
         this.resetProgressInDb();
-        player.seek(0, media.SeekMode.SEEK_PREV_SYNC);
+        // 重播回 0 也用 SEEK_CLOSEST：SEEK_PREV_SYNC 在部分流上会停在第一个同步帧之后
+        player.seek(0, media.SeekMode.SEEK_CLOSEST);
         player.play().catch((err: BusinessError) => {
           Toast.show('播放失败：' + err.message);
         });
@@ -2365,61 +1961,95 @@ export struct InlinePlayer {
   }
 
   /**
-   * mpv 分支的播放 / 暂停 / 重播（行为对齐 AVPlayer 的 togglePlay）。
+   * 精确 seek 到指定毫秒（进度条松手 / 双击快进 / 手势拖拽松手 / 续播补偿都走这里）。
    *
-   * 与 AVPlayer 的差异：mpv 的 seek 不暂停播放（内部只下发目标、轮询实测位置收尾），
-   * 所以这里不需要「seek 中点击按暂停」那个特殊分支，直接按 isPlaying 切换即可。
+   * 三个关键点，缺一就不准：
+   *  1. **只在松手时调用**（调用方保证）：拖动过程中的中间值只更新 UI 与 pendingSeekMs；
+   *  2. **SEEK_CLOSEST**：SEEK_PREV_SYNC 会跳到前一个关键帧，看起来就是「快进跳过头」；
+   *  3. **乐观落点 + seeking 锁**：立刻把 positionMs 置为目标并锁住 timeUpdate，
+   *     等 seekDone 拿到真实落点再回写，不会被旧位置覆盖（「弹回原处」）。
    */
-  private toggleMpvPlay(): void {
-    const kernel: MpvKernel | null = this.mpvKernel;
-    if (kernel === null) {
+  seekTo(positionMs: number): void {
+    const target: number = this.clampSeekMs(positionMs);
+    this.positionMs = target;
+    this.seekTargetMs = target;
+    this.seeking = true;
+    this.issueSeek(target);
+  }
+
+  /** seek 目标归一：毫秒整数 + 夹到 [0, durationMs]（durationMs 未知时只做下界保护） */
+  private clampSeekMs(positionMs: number): number {
+    let target: number = Math.round(positionMs);
+    if (!Number.isFinite(target) || target < 0) {
+      target = 0;
+    }
+    if (this.durationMs > 0 && target > this.durationMs) {
+      target = this.durationMs;
+    }
+    return target;
+  }
+
+  /**
+   * 真正下发一次 AVPlayer seek。
+   *
+   * @param target 目标毫秒（已 clamp）
+   *
+   * 上一次 seek 还没回调 seekDone 时只记 trailing 目标、不重复下发：
+   * 连点快进 / 快速拖动会把 AVPlayer 的 seek 队列打满，落点会变成更早的中间值。
+   */
+  private issueSeek(target: number): void {
+    const player: media.AVPlayer | null = this.avPlayer;
+    if (player === null) {
+      this.seeking = false;
+      return;
+    }
+    let state: string = '';
+    try {
+      state = player.state;
+    } catch (e) {
+      state = 'idle';
+    }
+    if (state !== 'prepared' && state !== 'playing' && state !== 'paused' && state !== 'completed') {
+      // 还没到可 seek 的状态（idle / initialized / error）：留给 prepared 阶段的续播 seek
+      this.pendingSeekMs = target;
+      this.seeking = false;
+      return;
+    }
+    if (this.seekInFlight) {
+      this.trailingSeekMs = target;
       return;
     }
     try {
-      if (kernel.isPlaying()) {
-        this.endSpeedBoost();
-        kernel.pause();
-      } else if (kernel.state === 'paused' || kernel.state === 'prepared') {
-        kernel.play();
-      } else if (kernel.state === 'completed') {
-        // 播放结束后点中央按钮 = 重播：进度归零后从头播（不自动跳转下一个视频）
-        this.completed = false;
-        this.hideResumeChip();
-        this.positionMs = 0;
-        this.lastSavedMs = 0;
-        this.pendingSeekMs = 0;
-        this.resumeTargetMs = 0;
-        this.resumeSeekApplied = true;
-        this.resetProgressInDb();
-        kernel.play();
-      }
+      this.seekInFlight = true;
+      this.startSeekGuard();
+      // 毫秒整数 + SEEK_CLOSEST：SEEK_PREV_SYNC/SEEK_NEXT_SYNC 都只能落在同步帧上
+      player.seek(target, media.SeekMode.SEEK_CLOSEST);
     } catch (e) {
+      this.seekInFlight = false;
+      this.seeking = false;
+      this.clearSeekGuard();
       Toast.show(describeError(e as Error));
     }
   }
 
-  seekTo(positionMs: number): void {
-    if (this.useKernel()) {
-      const kernel: MpvKernel | null = this.mpvKernel;
-      if (kernel !== null) {
-        try {
-          // 页面只下发一次 seek：目标 clamp、pause → seek → 等落地 → resume 这些策略全部由内核
-          // 自己决定（mpv 不需要 pause，也就没有页面级的「seek 后恢复播放」状态要维护）。
-          kernel.seek(positionMs);
-        } catch (e) {
-          Toast.show(describeError(e as Error));
-        }
+  /** seek 看门狗：seekDone 迟迟不来时解锁，避免进度条永久停住 */
+  private startSeekGuard(): void {
+    this.clearSeekGuard();
+    this.seekGuardTimer = setTimeout(() => {
+      this.seekGuardTimer = -1;
+      if (this.disposed) {
+        return;
       }
-      return;
-    }
-    const player: media.AVPlayer | null = this.avPlayer;
-    if (player === null) {
-      return;
-    }
-    try {
-      player.seek(positionMs, media.SeekMode.SEEK_PREV_SYNC);
-    } catch (e) {
-      Toast.show(describeError(e as Error));
+      this.seekInFlight = false;
+      this.trailingSeekMs = -1;
+      this.seeking = false;
+    }, SEEK_DONE_TIMEOUT_MS);
+  }
+
+  private clearSeekGuard(): void {
+    if (this.seekGuardTimer !== -1) {
+      clearTimeout(this.seekGuardTimer);
+      this.seekGuardTimer = -1;
     }
   }
 
@@ -2431,8 +2061,9 @@ export struct InlinePlayer {
     if (this.durationMs <= 0) {
       return;
     }
+    // 基准用 positionMs：seek 期间它就是「上一次 seek 的目标」，连点 / 连拖不会因为
+    // 播放器还没真正跳过去而少算距离（旧实现的误差累积就是这么来的）
     const target: number = Math.round(Math.min(this.durationMs, Math.max(0, this.positionMs + deltaMs)));
-    this.seeking = false;
     this.positionMs = target;
     this.seekTo(target);
     const label: string = deltaMs < 0 ? '快退 10 秒' : '快进 10 秒';
@@ -2476,14 +2107,6 @@ export struct InlinePlayer {
 
   /** 应用当前倍速：长按临时加速生效时用 2.0x，否则用用户选择的档位 */
   applySpeed(): void {
-    if (this.useKernel()) {
-      const kernel: MpvKernel | null = this.mpvKernel;
-      if (kernel !== null) {
-        kernel.setSpeed(this.boostActive ? SPEED_OPTIONS[SPEED_OPTIONS.length - 1].value :
-          SPEED_OPTIONS[this.speedIndex].value);
-      }
-      return;
-    }
     const player: media.AVPlayer | null = this.avPlayer;
     if (player === null) {
       return;
@@ -2500,15 +2123,8 @@ export struct InlinePlayer {
     }
   }
 
-  /** 把单视频循环开关同步给当前内核（AVPlayer 只能在 prepared/playing/paused/completed 设置） */
+  /** 把单视频循环开关同步给 AVPlayer（只能在 prepared/playing/paused/completed 设置） */
   applyLooping(): void {
-    if (this.useKernel()) {
-      const kernel: MpvKernel | null = this.mpvKernel;
-      if (kernel !== null) {
-        kernel.setLooping(this.looping);
-      }
-      return;
-    }
     const player: media.AVPlayer | null = this.avPlayer;
     if (player === null) {
       return;
@@ -2536,20 +2152,6 @@ export struct InlinePlayer {
   /** 长按开始：临时 2.0x（原版长按倍速，AVPlayer 最高档为 2.0x），并显示「2x 倍速中」提示 */
   beginSpeedBoost(): void {
     if (this.boostActive) {
-      return;
-    }
-    if (this.useKernel()) {
-      const kernel: MpvKernel | null = this.mpvKernel;
-      if (kernel === null || kernel.state !== 'playing') {
-        return;
-      }
-      try {
-        this.boostActive = true;
-        kernel.setSpeed(SPEED_OPTIONS[SPEED_OPTIONS.length - 1].value);
-        this.showSpeedBoostHint();
-      } catch (e) {
-        this.boostActive = false;
-      }
       return;
     }
     if (this.avPlayer === null) {
@@ -2800,11 +2402,17 @@ export struct InlinePlayer {
   }
 
   releasePlayer(): void {
+    // 释放即视为离开播放：解除锁定，避免下次进入沿用上次的锁定态导致「点哪都没反应」
+    this.locked = false;
+    this.clearLockHideTimer();
+    this.lockShown = true;
     this.clearLoadTimer();
     this.clearRetryTimer();
-    // mpv 分支：先清加载超时并释放内核（Surface/AVPlayer 两条路径互不影响）
-    this.clearMpvLoadTimer();
-    this.releaseMpvKernel();
+    // 在途 seek 的看门狗 / trailing 目标一并清掉，避免页面销毁后定时器还打到已释放的播放器
+    this.clearSeekGuard();
+    this.seekInFlight = false;
+    this.trailingSeekMs = -1;
+    this.seeking = false;
     const player: media.AVPlayer | null = this.avPlayer;
     this.avPlayer = null;
     this.prepareRequested = false;
@@ -2820,19 +2428,6 @@ export struct InlinePlayer {
   pauseAndSave(): void {
     this.saveProgressNow();
     this.endSpeedBoost();
-    if (this.useKernel()) {
-      const kernel: MpvKernel | null = this.mpvKernel;
-      // 离开页面 / 切后台时内核可能正处在 seek 落地判定窗口内（isSeeking 为 true），
-      // 两者一并检查，确保不会带着「还在播」的状态离开导致后台继续出声。
-      if (kernel !== null && (kernel.isPlaying() || kernel.isSeeking())) {
-        try {
-          kernel.pause();
-        } catch (e) {
-          // 页面可能正在销毁 / 内核已释放：静默忽略
-        }
-      }
-      return;
-    }
     const player: media.AVPlayer | null = this.avPlayer;
     if (player === null) {
       return;
@@ -2876,12 +2471,8 @@ export struct InlinePlayer {
   // 折叠 / 展开的播放联动（父页面小白条折叠隐藏 / 展开播放器时经句柄调用）
   // ---------------------------------------------------------------------------
 
-  /** 父页面折叠播放器前查询：当前内核是否正在 playing（播放器未创建 / 已释放时 false） */
+  /** 父页面折叠播放器前查询：AVPlayer 是否正在 playing（播放器未创建 / 已释放时 false） */
   private isPlayerPlayingNow(): boolean {
-    if (this.useKernel()) {
-      const kernel: MpvKernel | null = this.mpvKernel;
-      return kernel !== null && kernel.isPlaying();
-    }
     const player: media.AVPlayer | null = this.avPlayer;
     if (player === null) {
       return false;
@@ -2900,14 +2491,6 @@ export struct InlinePlayer {
    * 只有正在 playing 时才置标记，暂停失败 / 本来就没播时不影响后续正常唤出控制层。
    */
   private pauseForCollapsePlayback(): void {
-    if (this.useKernel()) {
-      const kernel: MpvKernel | null = this.mpvKernel;
-      if (kernel !== null && kernel.isPlaying()) {
-        this.collapsePausePending = true;
-      }
-      this.pauseAndSave();
-      return;
-    }
     const player: media.AVPlayer | null = this.avPlayer;
     if (player !== null) {
       try {
@@ -2936,19 +2519,6 @@ export struct InlinePlayer {
     this.pendingHiddenPause = false;
     this.pendingCoverPause = false;
     this.hiddenByCover = false;
-    if (this.useKernel()) {
-      const kernel: MpvKernel | null = this.mpvKernel;
-      if (kernel === null || (kernel.state !== 'paused' && kernel.state !== 'prepared')) {
-        return;
-      }
-      try {
-        kernel.play();
-        this.scheduleHideControls();
-      } catch (e) {
-        // 内核已释放
-      }
-      return;
-    }
     const player: media.AVPlayer | null = this.avPlayer;
     if (player === null) {
       return;
@@ -2977,6 +2547,39 @@ export struct InlinePlayer {
       clearTimeout(this.hideTimerId);
       this.hideTimerId = -1;
     }
+  }
+
+  /** 清掉锁定按钮的隐藏计时器（重复调用安全） */
+  clearLockHideTimer(): void {
+    if (this.lockHideTimerId !== -1) {
+      clearTimeout(this.lockHideTimerId);
+      this.lockHideTimerId = -1;
+    }
+  }
+
+  /**
+   * 显示锁定按钮并重新开始 3s 计时。
+   * 任何一次主动操作（点画面显隐控制层、锁定 / 解锁、按下播放器）都会调用它，
+   * 保证「刚操作过就看得见，停手 3s 就收起」。
+   */
+  showLockTemporarily(): void {
+    this.lockShown = true;
+    this.clearLockHideTimer();
+    this.lockHideTimerId = setTimeout(() => {
+      this.lockHideTimerId = -1;
+      if (this.disposed) {
+        return;
+      }
+      this.lockShown = false;
+    }, LOCK_HIDE_MS);
+  }
+
+  /** 锁定按钮是否应渲染：已锁定只看自己的开关；未锁定还要控制层可见 */
+  lockButtonVisible(): boolean {
+    if (!this.lockShown) {
+      return false;
+    }
+    return this.locked || this.controlsShown();
   }
 
   /**
@@ -3019,7 +2622,8 @@ export struct InlinePlayer {
 
   /** 控制层当前是否应该显示（网页播放时永远显示） */
   controlsShown(): boolean {
-    return this.useWeb || this.controlsVisible;
+    // 锁定期间控制层整体不显示（锁按钮自己不受这个开关约束，见 lockButtonLayer）
+    return !this.locked && (this.useWeb || this.controlsVisible);
   }
 
   /**
@@ -3093,6 +2697,26 @@ export struct InlinePlayer {
   showControls(): void {
     this.setControlsVisible(true);
     this.scheduleHideControls();
+    // 控制层出现的同时把锁定按钮一起叫出来，并重开 3s 计时
+    this.showLockTemporarily();
+  }
+
+  /**
+   * 锁定 / 解锁：锁定 = 收控制层 + 关掉全部手势入口；解锁 = 恢复控制层并重新计时。
+   * 锁定时顺手把浮层（设置面板 / 倍速清晰度选择器）收掉，否则它们会留在画面上。
+   */
+  toggleLock(): void {
+    this.locked = !this.locked;
+    if (this.locked) {
+      this.clearHideTimer();
+      this.clearLongPressTimer();
+      this.showSettings = false;
+      this.pickerKind = '';
+      this.setControlsVisible(false);
+      Toast.show('已锁定，点右侧锁图标解锁');
+    } else {
+      this.showControls();
+    }
   }
 
   /** 点击画面：显示 / 隐藏控制层（隐藏时一并收起浮层，避免浮层残留但控制层消失） */
@@ -3106,6 +2730,9 @@ export struct InlinePlayer {
         this.pickerKind = '';
       }
       this.setControlsVisible(false);
+      // 点画面收起控制层时，锁定按钮同步收起（不必等它的 3s）
+      this.clearLockHideTimer();
+      this.lockShown = false;
     } else {
       this.showControls();
     }
@@ -3165,6 +2792,13 @@ export struct InlinePlayer {
     if (this.disposed || this.useWeb) {
       return;
     }
+    // 已锁定：所有手势（单击显隐 / 双击 / 横滑 seek / 竖滑亮度音量 / 长按倍速）全部失效，
+    // 只有右侧锁按钮能点。锁按钮渲染在手势层之上，它的 onClick 在手势层之前被消费。
+    // 但「点画面」仍要能叫出锁按钮：否则锁上之后按钮 3s 一收，就再也没法解锁了。
+    if (this.locked) {
+      this.handleLockedTouch(event);
+      return;
+    }
     if (event.type === TouchType.Down) {
       this.handleGestureDown(event);
     } else if (event.type === TouchType.Move) {
@@ -3173,6 +2807,42 @@ export struct InlinePlayer {
       this.handleGestureUp(event);
     } else if (event.type === TouchType.Cancel) {
       this.handleGestureCancel();
+    }
+  }
+
+  /**
+   * 锁定态下的触摸处理：只认「轻点」，用来显隐锁定按钮，其余一概忽略。
+   *
+   * 为什么要位移判定：锁定时横滑 / 竖滑都被禁掉了，如果直接看 Up 事件，
+   * 任何一次滑动抬手都会被当成轻点，锁按钮就会莫名其妙地闪现 —— 用 12vp 位移 + 400ms 时窗卡住。
+   */
+  private handleLockedTouch(event: TouchEvent): void {
+    if (event.type === TouchType.Down) {
+      if (event.touches.length === 1) {
+        this.lockTapX = event.touches[0].x;
+        this.lockTapY = event.touches[0].y;
+        this.lockTapAt = Date.now();
+      }
+      return;
+    }
+    if (event.type !== TouchType.Up) {
+      return;
+    }
+    if (this.lockTapX < 0 || Date.now() - this.lockTapAt > 400) {
+      return;
+    }
+    const touch: TouchObject = event.changedTouches[0];
+    const moved: number = Math.abs(touch.x - this.lockTapX) + Math.abs(touch.y - this.lockTapY);
+    this.lockTapX = -1;
+    if (moved > 12) {
+      return;
+    }
+    // 轻点：按钮已在 → 立即收起；已收起 → 重新显示并开始 3s 计时
+    if (this.lockShown) {
+      this.clearLockHideTimer();
+      this.lockShown = false;
+    } else {
+      this.showLockTemporarily();
     }
   }
 
@@ -3229,7 +2899,7 @@ export struct InlinePlayer {
       if (this.gestureMoved || this.gestureDoubleTap) {
         return;
       }
-      // 长按临时倍速：按当前内核是否在播放判断（exo / mpv 统一入口）
+      // 长按临时倍速：按播放器当前是否在播放判断
       if (!this.isPlayerPlayingNow()) {
         return;
       }
@@ -3451,27 +3121,20 @@ export struct InlinePlayer {
     return this.resumeTargetMs > 0 && !this.resumeSeekApplied;
   }
 
-  /** 读播放器实时位置（毫秒）：positionMs 可信时直接用，否则回退内核 / AVPlayer / 待应用 seek */
+  /** 读播放器实时位置（毫秒）：positionMs 可信时直接用，否则回退 AVPlayer / 待应用 seek */
   private currentPlaybackPositionMs(): number {
     if (this.positionMs > 0) {
       return this.positionMs;
     }
-    if (this.useKernel()) {
-      const kernel: MpvKernel | null = this.mpvKernel;
-      if (kernel !== null && kernel.positionMs > 0) {
-        return kernel.positionMs;
-      }
-    } else {
-      const player: media.AVPlayer | null = this.avPlayer;
-      if (player !== null) {
-        try {
-          const current: number = player.currentTime;
-          if (Number.isFinite(current) && current > 0) {
-            return Math.round(current);
-          }
-        } catch (e) {
-          // 播放器已释放 / 状态不可读：继续用下面的兜底
+    const player: media.AVPlayer | null = this.avPlayer;
+    if (player !== null) {
+      try {
+        const current: number = player.currentTime;
+        if (Number.isFinite(current) && current > 0) {
+          return Math.round(current);
         }
+      } catch (e) {
+        // 播放器已释放 / 状态不可读：继续用下面的兜底
       }
     }
     if (this.pendingSeekMs > 0) {
@@ -3574,6 +3237,24 @@ export struct InlinePlayer {
     return this.gestureWidth / ratio;
   }
 
+
+  /**
+   * 原生播放专用纯黑铺底（网页降级分支不渲染这一层，网页自己铺满自己的背景）。
+   *
+   * 为什么单独铺一层而不是只靠父容器：竖屏视频 contain 之后左右是 letterbox，
+   * 这片区域暴露出来的是「播放器外面」的底色。父页面 / 主题色一旦带透明度或不是纯黑，
+   * 黑边就会发灰、和画面里 AVPlayer 自己的黑对不上。这里用不透明 #000000 兜住整块区域，
+   * 左右黑边只可能是纯黑。
+   */
+  @Builder
+  blackBackdrop() {
+    Column()
+      .width('100%')
+      .height('100%')
+      .backgroundColor('#000000')
+      .hitTestBehavior(HitTestMode.None);
+  }
+
   /** 画面层：原生播放用 XComponent（按画幅居中），网页降级用 Web 铺满（无圆角，纯黑底） */
   @Builder
   mediaLayer() {
@@ -3587,28 +3268,8 @@ export struct InlinePlayer {
             .width('100%')
             .height('100%')
             .backgroundColor(Color.Black);
-        } else if (this.kernelBranch === 'mpv') {
-          // mpv 分支：Player 本身就是 XComponentController（surfaceId/controller 模型，不是
-          // libraryname 模型），所以走和 exo 一样的 controller 写法，只换 controller。
-          // controller 不能为 null：内核还没 create 时回退到占位 controller（不渲染但不崩）；
-          // 正常路径下内核已在 aboutToAppear 预建，这里总是拿到非空 Player。
-          XComponent({
-            id: this.xcomponentId,
-            type: XComponentType.SURFACE,
-            controller: this.mpvKernel?.controller() ?? this.surfaceController
-          })
-            .width('100%')
-            .height('100%')
-            .backgroundColor(Color.Black)
-            .hitTestBehavior(HitTestMode.None)
-            .onLoad((event?: object) => {
-              this.onMpvXComponentLoad(event);
-            })
-            .onDestroy(() => {
-              this.onMpvSurfaceDestroy();
-            });
         } else {
-          // exo 分支 = 系统 AVPlayer（保持原样）：controller 的 onSurfaceCreated 拿 surfaceId 交给 AVPlayer
+          // 原生播放：系统 AVPlayer。controller 的 onSurfaceCreated 拿 surfaceId 交给 AVPlayer
           XComponent({
             // 每个内嵌播放器实例唯一：详情页可叠多层，XComponent id 不能重复
             id: this.xcomponentId,
@@ -4031,18 +3692,22 @@ export struct InlinePlayer {
             .blockColor('#FFFFFF')
             .trackThickness(3)
             .onChange((value: number, mode: SliderChangeMode) => {
+              // 拖动中只更新 UI 与 pendingSeekMs，**绝不下发 seek**：AVPlayer 的 seek 是异步队列，
+              // 每次 Moving 都提交会把队列打满，最终落点变成某个中间值而不是松手位置。
               if (mode === SliderChangeMode.Begin) {
                 this.seeking = true;
                 this.pointerDown = true;
                 this.positionMs = value;
+                this.pendingSeekMs = value;
                 this.showControls();
               } else if (mode === SliderChangeMode.Moving) {
                 this.positionMs = value;
+                this.pendingSeekMs = value;
               } else {
-                this.positionMs = value;
-                this.seeking = false;
+                // End / Click（点轨道直接定位）才是真正的提交点：用最后一个 value 精确 seek
+                this.positionMs = Math.round(value);
                 this.pointerDown = false;
-                this.seekTo(value);
+                this.seekTo(Math.round(value));
                 this.showControls();
               }
             });
@@ -4657,6 +4322,82 @@ export struct InlinePlayer {
     .hitTestBehavior(HitTestMode.None);
   }
 
+  // ---------------------------------------------------------------------------
+  // 竖屏（窄画面）黑边布局：圆形浮动按钮移进左右 letterbox
+  //
+  // 为什么单独做一套按钮而不是复用浮层里的：黑边是纯黑，浮层按钮的「半透明黑 + 0.8 白描边」
+  // 在黑边上会有一种「飘在画面里」的观感；这里改成更实的 rgba(0,0,0,0.55) + 1vp #33FFFFFF，
+  // 尺寸也统一成 44 起，保证按钮**完全落在黑边内**、不压视频画面。
+  // 所有按钮的点击行为都复用原有方法（togglePlay / requestFullscreen / handleBackTap …），
+  // 不复制任何播放逻辑，也不碰手势层。
+  // ---------------------------------------------------------------------------
+
+  /** 黑边·播放 / 暂停（44/48 圆形，图标随播放状态切换；点击行为与中央大按钮一致） */
+
+  /**
+   * 底部控制条渐变遮罩（仅竖屏黑边布局下补一层，横屏保持原样）：
+   * 自下而上 rgba(0,0,0,0) → rgba(0,0,0,0.6)，高 96，盖住画面的最下沿，
+   * 保证时间 / 进度 / 胶囊文字压在视频画面上仍然清晰。自身不参与命中，显隐随控制层。
+   */
+  @Builder
+  bottomBarScrim() {
+    Column() {
+      Column()
+        .width('100%')
+        .height(BOTTOM_SCRIM_HEIGHT)
+        .linearGradient({
+          direction: GradientDirection.Bottom,
+          colors: [['#00000000', 0.0], ['#99000000', 1.0]]
+        });
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.End)
+    .visibility(this.controlsGone ? Visibility.Hidden : Visibility.Visible)
+    .opacity(this.controlsShown() ? 1 : 0)
+    .hitTestBehavior(HitTestMode.None);
+  }
+
+  /**
+   * 画面右侧的锁定按钮（竖屏 / 横屏都固定贴在容器右侧垂直居中）。
+   *
+   * 交互：点一下锁定 → 控制层淡出隐藏、所有手势失效，只留这颗按钮；再点一下解锁并恢复控制层。
+   * 布局：外层 Row 铺满且 HitTestMode.None，只有 36 的圆钮本身参与命中，
+   * 因此未锁定时它不会挡住横滑 seek / 单击显隐等手势。
+   * 显隐：未锁定跟随控制层显隐（淡出时一起消失）；锁定后常显，且底色更实一点提示当前状态。
+   */
+  @Builder
+  lockButtonLayer() {
+    Row() {
+      Row() {
+        Text(this.locked ? '🔒' : '🔓')
+          .fontSize(15)
+          .fontColor('#FFFFFF');
+      }
+      .width(36)
+      .height(36)
+      .borderRadius(18)
+      .justifyContent(FlexAlign.Center)
+      .backgroundColor(this.locked ? '#B3000000' : '#66000000')
+      .backgroundBlurStyle(Glass.CHIP_BLUR)
+      .border({ width: 0.8, color: '#CCFFFFFF' })
+      .clickEffect({ level: ClickEffectLevel.LIGHT, scale: 0.92 })
+      .onClick(() => {
+        this.toggleLock();
+      });
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.End)
+    .alignItems(VerticalAlign.Center)
+    // 右边距与顶栏圆钮一致（topBar 的 Row padding 是 14），视觉上贴同一条竖线
+    .padding({ right: 14 })
+    .hitTestBehavior(HitTestMode.None)
+    .opacity(this.lockButtonVisible() ? 1 : 0)
+    .animation({ duration: 180, curve: Curve.EaseOut })
+    .visibility(this.lockButtonVisible() ? Visibility.Visible : Visibility.Hidden);
+  }
+
   /**
    * 控制层：铺满播放器的全尺寸层（纯 UI，不含任何播放逻辑）。
    *
@@ -4676,6 +4417,7 @@ export struct InlinePlayer {
       this.topBar();
 
       Column() {
+        // 中央播放/暂停键：点画面切换播放/暂停的手势也在（走 gestureLayer），按钮只是显式入口
         if (!this.useWeb && this.centerVisible()) {
           this.centerPlayButton();
         }
@@ -4698,6 +4440,12 @@ export struct InlinePlayer {
 
   build() {
     Stack({ alignContent: Alignment.Center }) {
+      // 原生播放先铺一层不透明纯黑底：竖屏视频 contain 后左右 letterbox 露出来的就是这层，
+      // 不再受父页面 / 主题底色影响（网页降级分支不铺，网页自己铺满自己的背景）
+      if (!this.useWeb) {
+        this.blackBackdrop();
+      }
+
       this.mediaLayer();
 
       // 亮度手势直接调窗口亮度（不再用黑色遮罩模拟画面变暗），这里不再有遮罩层
@@ -4715,8 +4463,18 @@ export struct InlinePlayer {
         this.webFallbackPanel();
       }
 
+      // 底部控制条渐变遮罩：自下而上的黑色渐变，保证时间 / 进度 / 胶囊文字压在画面上仍可读
+      if (!this.useWeb) {
+        this.bottomBarScrim();
+      }
+
       // 控制层（铺满播放器，含顶部条 / 居中播放键 / 底部条）：由 controlsVisible 驱动 180ms 显隐
       this.controlLayer();
+
+      // 画面右侧的锁定按钮：锁上后控制层隐藏、手势全部失效，只有它能点（避免误触）
+      if (!this.useWeb) {
+        this.lockButtonLayer();
+      }
 
       // 底部常显细进度条：贴着播放器下边缘，不随控制层显隐（设置页开关即时生效）；
       // 渲染在控制层之上才能盖住底部渐变条，但仍位于各类弹窗浮层之下

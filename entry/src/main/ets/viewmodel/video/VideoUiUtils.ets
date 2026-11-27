@@ -8,6 +8,7 @@
  */
 
 import {
+  Artist,
   HanimeVideo,
   LocalVideoRecord,
   VideoComment,
@@ -186,6 +187,51 @@ export function applyVideoFavorite(video: HanimeVideo, favorite: boolean): Hanim
   const likes: number = video.favTimes > 0 ? video.favTimes : 0;
   return copyVideoWithRating(video, favorite ? likes + 1 : (likes > 0 ? likes - 1 : 0),
     video.unlikesCount, favorite, favorite ? false : video.isUnlike);
+}
+
+/**
+ * 关注 / 取消关注作者成功后的本地状态更新（对齐上游 ArtistSection 的订阅按钮）。
+ *
+ * 为什么单独写一份拷贝：HanimeVideo 是 interface，Artist 嵌在里面，ArkTS 不能做对象展开，
+ * 只能显式重建。字段列表与 copyVideoWithRating 保持一致，只替换 artist。
+ */
+export function applyArtistSubscribed(video: HanimeVideo, subscribed: boolean): HanimeVideo {
+  const artist: Artist | null = video.artist;
+  if (artist === null) {
+    return video;
+  }
+  const nextArtist: Artist = {
+    name: artist.name,
+    avatarUrl: artist.avatarUrl,
+    genre: artist.genre,
+    userId: artist.userId,
+    artistId: artist.artistId,
+    isSubscribed: subscribed
+  };
+  const next: HanimeVideo = {
+    videoCode: video.videoCode,
+    title: video.title,
+    chineseTitle: video.chineseTitle,
+    introduction: video.introduction,
+    coverUrl: video.coverUrl,
+    uploadTime: video.uploadTime,
+    views: video.views,
+    favTimes: video.favTimes,
+    unlikesCount: video.unlikesCount,
+    isFav: video.isFav,
+    isUnlike: video.isUnlike,
+    csrfToken: video.csrfToken,
+    currentUserId: video.currentUserId,
+    tags: video.tags,
+    sources: video.sources,
+    myList: video.myList,
+    playlist: video.playlist,
+    relatedHanimes: video.relatedHanimes,
+    artist: nextArtist,
+    originalComic: video.originalComic,
+    commentCount: video.commentCount
+  };
+  return next;
 }
 
 function copyVideoWithRating(video: HanimeVideo, favTimes: number, unlikesCount: number,

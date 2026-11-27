@@ -18,8 +18,8 @@ Copyright 2026 Han1meViewer HarmonyOS port contributors
    （entry/src/main/ets/core/parser/HtmlDom.ts），解析逻辑按上游 Parser.kt 重写为 TypeScript。
 4. 数据层：Room 数据库替换为 relationalStore；仅移植本地收藏、稍后再看、观看历史、搜索历史四类数据。
 5. UI 层：全部页面使用 ArkUI 重写（首页 / 搜索 / 视频详情 / 播放器 / 评论 / 我的 / 设置 / 登录 / 网页容器）。
-6. 播放内核：Media3 ExoPlayer 替换为系统 AVPlayer（HLS/MP4，设置项沿用上游语义称 ExoPlayer），
-   MPV 替换为 libmpv 封装（@mpv-ohos/mpv-arkts，可选内核，失败回退系统 AVPlayer），
+6. 播放内核：Media3 ExoPlayer / MPV 均不移植，统一使用系统 AVPlayer（单一内核，HLS/MP4；
+   HarmonyOS 无 ExoPlayer / Media3，libmpv 在真机上无法起播，尝试后已整体移除），
    并提供 Web 组件降级播放。
 7. 未移植：后台下载管理、WorkManager、MVVM 之外的 Jetpack 组件、Firebase（Analytics / Crashlytics /
    Remote Config / Realtime Database 公告）、桌面小组件、共享关键 H 帧、Getchu 预览、更新检查（GitHub API）、

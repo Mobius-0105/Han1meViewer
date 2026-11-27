@@ -7,12 +7,21 @@ export const APP_NAME: string = 'Han1meViewer';
 /** 默认站点 */
 export const DEFAULT_BASE_URL: string = 'https://hanime1.me/';
 
-/** 备用域名（设置里可以切换） */
+/**
+ * 可选站点域名（设置里可以切换）。
+ *
+ * 为什么只有三个：原先列表末尾还有一个 AV 镜像站，它其实是另一个站（搜索分类、页面结构、
+ * CDN 规则都不同），混进「同一站点的备用域名」里会让自动换站把用户带去内容不连续的地方，
+ * 因此按产品要求移除。解析器里针对 AV 站的分支仍保留，因为 fixtures/ 下的历史抓取样本
+ * 来自那个站，删掉会让解析测试失真。
+ *
+ * 注意：这里是站点轮换的唯一数据源，SiteSwitcher / SiteFailover / 设置页都按数组长度
+ * 推导数量，不要再在别处写死域名个数或「最后一项是 AV 站」之类的下标假设。
+ */
 export const BASE_URL_OPTIONS: string[] = [
   'https://hanime1.me/',
   'https://hanime1.com/',
-  'https://hanimeone.me/',
-  'https://javchu.com/'
+  'https://hanimeone.me/'
 ];
 
 /** 默认 UA：跟着站点当前推荐的移动端 Chrome */

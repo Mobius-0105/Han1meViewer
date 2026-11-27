@@ -575,6 +575,32 @@ export class HanimeApi {
     }
   }
 
+  /**
+   * POST `/subscribe`：关注 / 取消关注作者（对齐上游 `HanimeSubscriptionService.subscribeArtist`）。
+   *
+   * 表单字段与上游逐字段一致（Kotlin：`logic/network/service/HanimeSubscriptionService.kt:13-19`）：
+   *  - `_token` CSRF；
+   *  - `subscribe-user-id` / `subscribe-artist-id` 来自视频页 `#video-subscribe-form` 的两个 hidden input
+   *    （由 HanimeParser.parseArtist 解析进 Artist.userId / Artist.artistId）；
+   *  - `subscribe-status`：**未订阅时发空串，已订阅发 `1`**，所以「关注」= 空串、取消关注 = '1'；
+   *  - 请求头同时带 `X-CSRF-TOKEN`（与站内其它 POST 一致）。
+   */
+  async subscribeArtist(userId: string, artistId: string, subscribed: boolean, token: string): Promise<void> {
+    try {
+      const form: Record<string, string> = {};
+      form['_token'] = token;
+      form['subscribe-user-id'] = userId;
+      form['subscribe-artist-id'] = artistId;
+      form['subscribe-status'] = subscribed ? '1' : '';
+      const url: string = this.baseUrl + 'subscribe';
+      const result: HttpResult = await this.client.postForm(url, form, this.csrfHeaders(token));
+      this.assertPostOk(result);
+    } catch (rawError) {
+      const error: Error = rawError as Error;
+      throw this.parseErrorOf(error);
+    }
+  }
+
   /** POST `/like`：给影片点赞/点踩 */
   async rateVideo(
     videoCode: string,

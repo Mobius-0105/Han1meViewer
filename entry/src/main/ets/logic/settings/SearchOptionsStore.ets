@@ -8,7 +8,9 @@
  * 搜索页 aboutToAppear 或 EntryAbility 中调用；切换语言后可再次 init 刷新）。
  * init 之前所有 getter 返回空数组，不会崩。
  *
- * 注意：genre 会按当前站点自动切换 —— 上游在 javchu 镜像下用 genre_av.json。
+ * 历史说明：上游在 AV 镜像站下会改用 AV 分类（genre_av.json）。本工程已把该站从可选站点中
+ * 移除（见 Constants.BASE_URL_OPTIONS），没有入口能切过去，因此这段分支被删掉；
+ * 对应的 rawfile/search_options/genre_av.json 保留，仅作上游数据留档，当前无加载入口。
  */
 
 import { util } from '@kit.ArkTS';
@@ -16,9 +18,7 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { SearchOptionItem } from '../../core/model/Models';
-import { BASE_URL_OPTIONS } from '../../core/util/Constants';
 import { parseOptionList, parseOptionMap, scopeKeys } from '../../core/util/SearchOptions';
-import { AppSettings } from './AppSettings';
 
 const DOMAIN: number = 0x0001;
 const TAG: string = 'SearchOptionsStore';
@@ -28,7 +28,6 @@ const OPTION_DIR: string = 'search_options/';
 
 /** 列表型数据文件名。 */
 const FILE_GENRE: string = 'genre.json';
-const FILE_GENRE_AV: string = 'genre_av.json';
 const FILE_SORT: string = 'sort_option.json';
 const FILE_DURATION: string = 'duration.json';
 const FILE_RELEASE_DATE: string = 'release_date.json';
@@ -61,10 +60,8 @@ export class SearchOptionsStore {
    */
   async init(ctx: common.UIAbilityContext, lang: string): Promise<void> {
     const language: string = lang.length > 0 ? lang : 'zh-rTW';
-    const useAvGenre: boolean = this.isAvSite(AppSettings.getInstance().getBaseUrl());
-    const genreFile: string = useAvGenre ? FILE_GENRE_AV : FILE_GENRE;
 
-    this.genreItems = await this.loadList(ctx, genreFile, language);
+    this.genreItems = await this.loadList(ctx, FILE_GENRE, language);
     this.sortItems = await this.loadList(ctx, FILE_SORT, language);
     this.durationItems = await this.loadList(ctx, FILE_DURATION, language);
     this.dateItems = await this.loadList(ctx, FILE_RELEASE_DATE, language);
@@ -110,15 +107,6 @@ export class SearchOptionsStore {
   // ---------------------------------------------------------------------------
   // 内部
   // ---------------------------------------------------------------------------
-
-  /** javchu 镜像的筛选项是 AV 分类（genre_av.json）。 */
-  private isAvSite(baseUrl: string): boolean {
-    if (baseUrl.indexOf('javchu.com') >= 0) {
-      return true;
-    }
-    const avUrl: string = BASE_URL_OPTIONS[BASE_URL_OPTIONS.length - 1];
-    return baseUrl === avUrl;
-  }
 
   private async loadList(
     ctx: common.UIAbilityContext,

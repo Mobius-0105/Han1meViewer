@@ -303,6 +303,27 @@ function consumeBackWhenVideoFullscreen(routeName: string): boolean {
 }
 
 /**
+ * 系统返回键 / 返回手势拦截（浮层优先）：视频详情页上的作者作品二级面板打开时，
+ * 先关面板、不 pop 页面。
+ *
+ * 机制与全屏那条完全一样：视频页把 AppStorage['videoPanelOpen'] 置位，
+ * 这里自增 AppStorage['exitVideoPanel']，视频页 Watch 收到 tick 后自己关面板。
+ * 先判面板再判全屏 —— 面板是叠在全屏播放器之上的浮层，顺序不能反。
+ */
+function consumeBackWhenVideoPanel(routeName: string): boolean {
+  if (routeName !== ROUTE_VIDEO || !PageTrans.isTopRoute(routeName)) {
+    return false;
+  }
+  const panelOpen: boolean | undefined = AppStorage.get<boolean>('videoPanelOpen');
+  if (panelOpen !== true) {
+    return false;
+  }
+  const tick: number = AppStorage.get<number>('exitVideoPanel') ?? 0;
+  AppStorage.setOrCreate<number>('exitVideoPanel', tick + 1);
+  return true;
+}
+
+/**
  * 路由分发。Index.ets 的 Navigation 通过 navDestination 调用它，
  * 每个分支返回一个 NavDestination 包裹的页面组件（统一套 PageFade 内容过渡层）。
  */
@@ -346,9 +367,9 @@ function PageMap(name: string, param: object) {
   .customTransition((operation: NavigationOperation, isEnter: boolean): Array<NavDestinationTransition> | undefined => {
     return pageTransitionDelegate(name, param, operation, isEnter);
   })
-  // 系统返回键/手势：视频页全屏时先退出全屏，不 pop 页面
+  // 系统返回键/手势：优先关掉详情页上的浮层（作者作品面板），其次退出全屏，最后才 pop
   .onBackPressed((): boolean => {
-    return consumeBackWhenVideoFullscreen(name);
+    return consumeBackWhenVideoPanel(name) || consumeBackWhenVideoFullscreen(name);
   })
   // 二级页显示时隐藏根 Tab 的悬浮底栏（系统 Tabs 底栏会盖在 push 页面底部，形成遮挡卡片的长条）
   .onShown(() => {
