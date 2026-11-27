@@ -1,0 +1,7 @@
+{
+  "modelVersion": "6.0.0",
+  "description": "Han1meViewer HarmonyOS NEXT (ArkTS) client - a third-party client for hanime1.me",
+  "license": "Apache-2.0",
+  "dependencies": {},
+  "devDependencies": {}
+}

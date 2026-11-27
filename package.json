@@ -1,0 +1,15 @@
+{
+  "name": "han1meviewer-harmony-dev",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dev-only tooling for the Han1meViewer HarmonyOS port: Node-based tests for pure TypeScript logic. Not part of the HAP build.",
+  "scripts": {
+    "test": "tsx --test tests",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "@types/node": "^22.10.2"
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "app": {
+    "signingConfigs": [],
+    "products": [
+      {
+        // 默认产品：HarmonyOS 7.0 / API 26（真沉浸材质需要 uiMaterial，仅 API 26+ 可用）。
+        // 用 DevEco Studio 7.x（含 HarmonyOS SDK 26）打开即可直接构建/运行。
+        "name": "default",
+        "compatibleSdkVersion": "26.0.0(26)",
+        "compileSdkVersion": "26.0.0(26)",
+        "targetSdkVersion": "26.0.0(26)",
+        "runtimeOS": "HarmonyOS",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      },
+      {
+        // 无 HarmonyOS SDK 时的本地命令行验证产品（OpenHarmony 7.0 / API 26）：
+        //   hvigorw --mode module -p product=api26 -p module=entry@default assembleHap
+        "name": "api26",
+        "compatibleSdkVersion": "26.0.0(26)",
+        "compileSdkVersion": "26.0.0(26)",
+        "targetSdkVersion": "26.0.0(26)",
+        "runtimeOS": "OpenHarmony",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default",
+            "api26"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<!--
+  SYNTHETIC FIXTURE —— 该文件是手工构造的合成 HTML，不是真实站点快照。
+  用途：覆盖真实抓取拿不到/不稳定的解析路径——
+    * 主站（非 AV 站）的 <video id=player><source size=...> 清晰度列表
+    * 点赞/点踩已登录状态（input[name=like-status] 等）
+    * 我的清单 checkbox / 稍后再看
+    * 中文标题、简介、原作漫画链接、评论总数
+    * 旧版系列播放列表版式（card-mobile-panel）
+  结构严格按 android-src 的 logic/Parser.kt 选择器构造，字段值均为假数据。
+-->
+<html lang="zht">
+<head>
+<meta charset="utf-8">
+<meta name="csrf-token" content="SYNTH-CSRF-META">
+<title>synthetic watch page</title>
+</head>
+<body>
+<div id="video-page">
+  <form id="video-like-form">
+    <input type="hidden" name="_token" value="SYNTH-CSRF-TOKEN">
+    <input type="hidden" name="like-user-id" value="777001">
+    <input type="hidden" name="like-status" value="1">
+    <input type="hidden" name="unlike-status" value="">
+    <input type="hidden" name="likes-count" value="128">
+    <input type="hidden" name="unlikes-count" value="5">
+  </form>
+
+  <h3 id="shareBtn-title" class="video-details-wrapper">合成測試影片 第一話</h3>
+
+  <div class="video-details-wrapper">
+    <div class="video-description-panel">
+      <div class="hidden-xs">觀看次數：1.2萬次&nbsp;&nbsp;2025-12-24</div>
+      <div class="chinese-title">合成測試影片（中文字幕）</div>
+      <div class="video-caption-text caption-ellipsis">這是一段簡介文本。</div>
+    </div>
+  </div>
+
+  <div class="video-details-wrapper video-tags-wrapper">
+    <div class="single-video-tag"><a href="/search?tags%5B%5D=巨乳">#巨乳 (12)</a></div>
+    <div class="single-video-tag"><a href="/search?tags%5B%5D=中文字幕">#中文字幕 (3)</a></div>
+    <div class="single-video-tag"><a><span>add</span></a></div>
+  </div>
+
+  <video id="player" style="width:100%" poster="https://vdownload.hembed.com/image/poster/999999.jpg">
+    <source size="1080" src="https://t33.cdn2020.com/video/m3u8/999999/1080/index.m3u8" type="application/x-mpegURL">
+    <source size="720" src="//t26.cdn2020.com/video/m3u8/999999/720/index.m3u8" type="video/mp4">
+    <source size="480" src="/media/999999/480.mp4" type="video/mp4">
+  </video>
+
+  <div id="playlist-save-checkbox"><input type="checkbox" checked></div>
+  <div class="playlist-checkbox-wrapper"><span>我的最愛</span><input type="checkbox" id="list-code-love" checked></div>
+  <div class="playlist-checkbox-wrapper"><span>稍後觀看</span><input type="checkbox" id="list-code-later"></div>
+
+  <div class="video-playlist-wrapper">
+    <div><div><h4>合成系列播放清單</h4></div></div>
+    <div id="playlist-scroll">
+      <div class="playlist-card">
+        <div><a href="https://hanime1.me/watch?v=111111"><img class="main-thumb" src="https://vdownload.hembed.com/image/thumbnail/111111l.jpg"></a></div>
+        <div class="card-mobile-panel">
+          <div>
+            <div>
+              <div>
+                <img src="https://vdownload.hembed.com/image/icon/play.png">
+                <img src="https://vdownload.hembed.com/image/thumbnail/111111l.jpg" alt="系列第一話">
+              </div>
+              <div>播放中</div>
+            </div>
+          </div>
+          <div class="card-mobile-duration">12:34</div>
+          <div class="card-mobile-duration">1/2</div>
+          <div class="card-mobile-duration">1.5萬次</div>
+          <div class="card-mobile-duration card-playlist-large">98%</div>
+          <a class="card-mobile-user">作者合成</a>
+        </div>
+      </div>
+      <div class="playlist-card">
+        <div><a href="https://hanime1.me/watch?v=222222"><img class="main-thumb" src="https://vdownload.hembed.com/image/thumbnail/222222l.jpg"></a></div>
+        <div class="card-mobile-panel">
+          <div>
+            <div>
+              <div>
+                <img src="https://vdownload.hembed.com/image/icon/play.png">
+                <img src="https://vdownload.hembed.com/image/thumbnail/222222l.jpg" alt="系列第二話">
+              </div>
+              <div>尚未觀看</div>
+            </div>
+          </div>
+          <div class="card-mobile-duration">11:11</div>
+          <div class="card-mobile-duration">2/2</div>
+          <div class="card-mobile-duration">8000次</div>
+          <div class="card-mobile-duration card-playlist-large">95%</div>
+          <a class="card-mobile-user">作者合成</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="video-details-wrapper">
+    <div>
+      <a href="https://hanime1.me/user/123456">
+        <div>
+          <img id="video-user-avatar" src="https://vdownload.hembed.com/image/icon/artist_avatar_default.jpg">
+          <img style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 50%;" src="https://i.imgur.com/avatar999.png">
+        </div>
+      </a>
+      <div>
+        <div>
+          <a id="video-artist-name">作者合成</a>
+          <a style="margin-left: 8px;" href="https://hanime1.me/search?genre=裏番">裏番</a>
+        </div>
+      </div>
+    </div>
+  </div>
+  <form id="video-subscribe-form">
+    <input type="hidden" name="subscribe-user-id" value="777001">
+    <input type="hidden" name="subscribe-artist-id" value="123456">
+    <input type="hidden" name="subscribe-status" value="1">
+  </form>
+
+  <a class="video-comic-btn" href="https://example.com/comic/999999">原作漫畫</a>
+
+  <button id="comment-tablink" class="tablinks comment-tablinks">評論&nbsp;&nbsp;<span id="tab-comments-count">42</span></button>
+
+  <div id="related-tabcontent" class="tabcontent">
+    <div class="row">
+      <div class="desktop-video-grid">
+        <div title="相關一" class="video-item-container">
+          <div class="horizontal-card">
+            <a href="https://hanime1.me/watch?v=333333" class="video-link">
+              <div class="thumb-container">
+                <img class="main-thumb" src="https://vdownload.hembed.com/image/thumbnail/333333l.jpg">
+                <div class="duration">10:00</div>
+                <div class="stats-container">
+                  <div class="stat-item"><i class="material-icons">thumb_up</i> 90%</div>
+                  <div class="stat-item">1.1萬次</div>
+                </div>
+              </div>
+              <div class="title">相關影片一</div>
+            </a>
+            <div class="subtitle"><a href="/search?query=作者C">作者C</a><span class="subtitle-time">• 1天前</span></div>
+          </div>
+        </div>
+        <div title="相關二" class="video-item-container">
+          <div class="horizontal-card">
+            <a href="https://hanime1.me/watch?v=444444" class="video-link">
+              <div class="thumb-container">
+                <img class="main-thumb" src="https://vdownload.hembed.com/image/thumbnail/444444l.jpg">
+                <div class="duration">22:00</div>
+                <div class="stats-container">
+                  <div class="stat-item"><i class="material-icons">thumb_up</i> 88%</div>
+                  <div class="stat-item">2.2萬次</div>
+                </div>
+              </div>
+              <div class="title">相關影片二</div>
+            </a>
+            <div class="subtitle"><a href="/search?query=作者D">作者D</a><span class="subtitle-time">• 2天前</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

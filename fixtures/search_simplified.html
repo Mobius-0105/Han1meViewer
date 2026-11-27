@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<!--
+  SYNTHETIC FIXTURE —— 手工构造的"简化版式"搜索结果页，不是真实站点快照。
+  真实搜索页抓到的都是普通卡片（horizontal-card），简化版式只在"新番预告"等
+  搜索结果出现，匿名/无快照环境下不易稳定抓取，因此按 Parser.kt
+  hanimeSearchSimplified / hanimeSimplifiedItem 的选择器构造：
+    div.home-rows-videos-wrapper > a > img
+    a > div.home-rows-videos-title
+    a > div.video-card-inner > div.hidden-xs（发布日期）
+-->
+<html lang="zht">
+<head><meta charset="utf-8"><title>synthetic simplified search</title></head>
+<body>
+<input id="skip-page-input" name="page" type="text" oninput="validateNumberInput(this, 1, 3)" value="1">
+
+<div class="home-rows-videos-wrapper home-row">
+  <a class="home-rows-videos-div" href="https://hanime1.me/watch?v=555555">
+    <img class="main-thumb" src="https://vdownload.hembed.com/image/thumbnail/555555l.jpg">
+    <div class="home-rows-videos-title">預告片甲</div>
+    <div class="video-card-inner">
+      <div class="hidden-xs">11月27日</div>
+    </div>
+  </a>
+  <a class="home-rows-videos-div" href="https://hanime1.me/watch?v=666666">
+    <img class="main-thumb" src="https://vdownload.hembed.com/image/thumbnail/666666l.jpg">
+    <div class="home-rows-videos-title">預告片乙</div>
+    <div class="video-card-inner">
+      <div class="hidden-xs">12月3日</div>
+    </div>
+  </a>
+</div>
+</body>
+</html>

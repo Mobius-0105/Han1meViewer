@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<!--
+  SYNTHETIC FIXTURE —— 手工构造的"我的清单"页面，不是真实站点快照。
+  真实抓取时 /user/<id>/likes、/saves 需要登录才能看到条目（匿名访问为空列表），
+  因此按 android-src logic/Parser.kt 的 myListItems 选择器构造：
+    #playlist-show-description + div.horizontal-row > div[class^=user-tab-item-wrapper]
+    + input#skip-page-input（总页数）
+  卡片结构沿用真实站点 horizontal-card 的 DOM。
+-->
+<html lang="zht">
+<head><meta charset="utf-8"><title>synthetic my list</title></head>
+<body>
+<input type="hidden" name="_token" value="MYLIST-CSRF">
+
+<div id="playlist-show-description">我的最愛清單說明（合成）</div>
+
+<div class="horizontal-row">
+  <div class="user-tab-item-wrapper" id="my-list-item-1">
+    <div class="video-item-container">
+      <div class="horizontal-card">
+        <a href="https://hanime1.me/watch?v=111111" class="video-link">
+          <div class="thumb-container">
+            <img class="main-thumb" src="https://vdownload.hembed.com/image/thumbnail/111111l.jpg">
+            <div class="duration">24:00</div>
+            <div class="stats-container">
+              <div class="stat-item"><i class="material-icons">thumb_up</i> 97%</div>
+              <div class="stat-item">3.4萬次</div>
+            </div>
+          </div>
+          <div class="title">清單影片一</div>
+        </a>
+        <div class="subtitle">
+          <a href="https://hanime1.me/search?query=作者B">作者B</a>
+          <span class="subtitle-time">&nbsp;• 3天前</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="user-tab-item-wrapper" id="my-list-item-2">
+    <div class="video-item-container">
+      <div class="horizontal-card">
+        <a href="https://hanime1.me/watch?v=222222" class="video-link">
+          <div class="thumb-container">
+            <img class="main-thumb" src="https://vdownload.hembed.com/image/thumbnail/222222l.jpg">
+            <div class="duration">12:34</div>
+            <div class="stats-container">
+              <div class="stat-item"><i class="material-icons">thumb_up</i> 92%</div>
+              <div class="stat-item">1.1萬次</div>
+            </div>
+          </div>
+          <div class="title">清單影片二</div>
+        </a>
+        <div class="subtitle">
+          <a href="https://hanime1.me/search?query=作者C">作者C</a>
+          <span class="subtitle-time">&nbsp;• 5天前</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<input id="skip-page-input" name="page" type="text" oninput="validateNumberInput(this, 1, 7)" value="1">
+</body>
+</html>

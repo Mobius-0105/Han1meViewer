@@ -1,0 +1,31 @@
+# HarmonyOS build outputs
+/entry/build/
+/entry/.preview/
+/build/
+/.hvigor/
+/oh_modules/
+/entry/oh_modules/
+*.har
+# 本地 MPV 播放内核 HAR 需要随仓库分发
+!entry/libs/*.har
+*.hap
+*.hsp
+
+# 本地打包产物（历史 HAP 归档）
+/dist/
+
+# 本机路径 / 签名配置
+/local.properties
+
+# Dev tooling
+/node_modules/
+/package-lock.json
+
+# IDE
+/.idea/
+/.vscode/
+*.iml
+
+# Logs / temp
+*.log
+/tmp/

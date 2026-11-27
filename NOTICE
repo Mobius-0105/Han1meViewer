@@ -1,0 +1,36 @@
+Han1meViewer · HarmonyOS NEXT 移植版
+Copyright 2026 Han1meViewer HarmonyOS port contributors
+
+本产品包含由 Han1meViewer 项目开发的软件：
+  https://github.com/misaka10032w/Han1meViewer
+  https://github.com/YenalyLiew/Han1meViewer
+原始项目以 Apache License 2.0 授权（见 LICENSE）。
+
+根据 Apache License 2.0 第 4 条，现说明本移植版的修改内容：
+
+1. 整体重写：上游使用 Kotlin + Jetpack Compose + Retrofit + Jsoup + Room + Media3/MPV；
+   本移植版使用 HarmonyOS NEXT（API 12+）的 ArkTS / ArkUI，以及
+   @kit.NetworkKit(http)、@kit.ArkData(relationalStore/preferences)、
+   @kit.MediaKit(AVPlayer)、@kit.ArkWeb(Web)。
+2. 网络层：Retrofit/OkHttp 替换为 @ohos.net.http 封装；Cookie 管理重新实现并持久化到 preferences；
+   Cloudflare 挑战处理由「WebView 拦截器 + 阻塞重试」改为「错误分类 + 网页验证后重试」。
+3. 解析层：Jsoup DOM / CSS 选择器替换为自研迷你 HTML 解析器与选择器引擎
+   （entry/src/main/ets/core/parser/HtmlDom.ts），解析逻辑按上游 Parser.kt 重写为 TypeScript。
+4. 数据层：Room 数据库替换为 relationalStore；仅移植本地收藏、稍后再看、观看历史、搜索历史四类数据。
+5. UI 层：全部页面使用 ArkUI 重写（首页 / 搜索 / 视频详情 / 播放器 / 评论 / 我的 / 设置 / 登录 / 网页容器）。
+6. 播放内核：Media3 ExoPlayer 替换为系统 AVPlayer（HLS/MP4，设置项沿用上游语义称 ExoPlayer），
+   MPV 替换为 libmpv 封装（@mpv-ohos/mpv-arkts，可选内核，失败回退系统 AVPlayer），
+   并提供 Web 组件降级播放。
+7. 未移植：后台下载管理、WorkManager、MVVM 之外的 Jetpack 组件、Firebase（Analytics / Crashlytics /
+   Remote Config / Realtime Database 公告）、桌面小组件、共享关键 H 帧、Getchu 预览、更新检查（GitHub API）、
+   部分账号编辑功能。详见 docs/FEATURE_MATRIX.md。
+
+本项目不含任何上游的二进制产物；所有代码为在 HarmonyOS 平台上的新实现。
+英文版 Apache License 2.0 全文见 LICENSE 文件。
+
+UI 设计参考说明
+----------------
+本移植版的界面视觉方向（渐变壁纸背景、半透明毛玻璃卡片、悬浮底栏、胶囊控件）参考了开源项目
+PuraPily（https://github.com/aryue/PuraPily ，GPL-3.0）的设计思路。
+该项目的代码未在本项目中使用（GPL-3.0 与本项目 Apache-2.0 不兼容）；本项目 UI 为独立实现，
+仅使用 HarmonyOS 公开 ArkUI 接口（backgroundBlurStyle / 半透明色 / 渐变 / 描边 / 阴影等）。

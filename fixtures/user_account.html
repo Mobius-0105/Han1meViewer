@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<!--
+  SYNTHETIC FIXTURE —— 手工构造的账号资料页，不是真实站点快照。
+  /user/<id>/edit 需要登录（匿名访问会 302 到 /login），因此按
+  android-src logic/Parser.kt 的 userAccountPage 选择器构造：
+    meta[name=csrf-token] / img#playlist-avatar / input[name=name]
+    #email（2026-11 改版后 disabled 只读） / div.profile-sub-stats-id
+    #user-modal-created / div.profile-sub-stats-new-line
+-->
+<html lang="zht">
+<head>
+<meta charset="utf-8">
+<meta name="csrf-token" content="ACCOUNT-CSRF">
+<title>synthetic user account</title>
+</head>
+<body>
+<form id="account-form">
+  <img id="playlist-avatar" src="https://vdownload.hembed.com/image/avatar/123456.jpeg">
+  <input type="text" name="name" value="合成用戶名">
+  <input type="email" id="email" value="user@example.com" disabled>
+  <div class="profile-sub-stats-id">用戶 ID：1001450</div>
+  <div id="user-modal-created">加入於 2024-01-02</div>
+  <div class="profile-sub-stats-new-line">訂閱 12&nbsp;&nbsp;&nbsp;&nbsp;影片 34</div>
+</form>
+</body>
+</html>

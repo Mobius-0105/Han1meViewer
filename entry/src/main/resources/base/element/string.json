@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Han1meViewer HarmonyOS client"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Han1meViewer"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Han1meViewer"
+    }
+  ]
+}
